@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from telegram import Bot, Message, MessageReactionUpdated, ReplyParameters
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application
 
@@ -29,6 +29,8 @@ from utils.formatting import (
 
 
 logger = logging.getLogger(__name__)
+READ_RECEIPT_TTL_SECONDS = 5.0
+TYPING_TTL_SECONDS = 20.0
 
 
 def _preview(value: object, limit: int = 180) -> str:
@@ -53,6 +55,8 @@ class MessengerTelegramBridge:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._topic_locks: dict[str, asyncio.Lock] = {}
         self._activity_dedupe: dict[str, int] = {}
+        self._typing_messages: dict[str, tuple[int, int]] = {}
+        self._ephemeral_delete_tasks: dict[str, asyncio.Task] = {}
 
     async def start(self, application: Application) -> None:
         self.bot = application.bot
@@ -75,6 +79,10 @@ class MessengerTelegramBridge:
 
     async def shutdown(self, application: Application) -> None:
         logger.info("Bridge shutting down")
+        for task in self._ephemeral_delete_tasks.values():
+            task.cancel()
+        self._ephemeral_delete_tasks.clear()
+        self._typing_messages.clear()
         self.messenger.stop()
 
     def _on_messenger_event_from_thread(self, event: dict) -> None:
@@ -117,6 +125,7 @@ class MessengerTelegramBridge:
             return
 
         await self._enrich_sender_name(message)
+        await self._clear_typing_for_message(message)
         logger.info(
             "Messenger -> Telegram received: transport=%s messenger_id=%s thread_id=%s chat_jid=%s sender=%s message_id=%s reply_to=%s text=%s attachments=%s",
             message.transport,
@@ -183,6 +192,10 @@ class MessengerTelegramBridge:
             )
             return
 
+        if activity.kind == "typing":
+            await self._handle_typing_activity(activity)
+            return
+
         logger.info(
             "Messenger -> Telegram activity: kind=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s actor=%s target=%s text=%s",
             activity.kind,
@@ -197,13 +210,135 @@ class MessengerTelegramBridge:
         topic_message = self._activity_topic_message(activity)
         entry = await self._get_or_create_topic(topic_message)
         reply_to = self._activity_reply_to_tg(activity)
-        await self._send_activity_with_topic_recovery(entry, activity, reply_to)
+        sent = await self._send_activity_with_topic_recovery(entry, activity, reply_to)
+        if activity.kind in {"read_receipt", "e2ee_receipt"}:
+            self._schedule_delete_message(
+                f"read:{activity.kind}:{sent.chat_id}:{sent.message_id}",
+                sent.chat_id,
+                sent.message_id,
+                READ_RECEIPT_TTL_SECONDS,
+                f"{activity.kind} expired",
+            )
         logger.info(
             "Messenger -> Telegram activity sent: topic_id=%s kind=%s reply_to_tg=%s",
             entry.topic_id,
             activity.kind,
             reply_to or "-",
         )
+
+    async def _handle_typing_activity(self, activity: IncomingMessengerActivity) -> None:
+        key = self._typing_key(activity.transport, activity.messenger_id, activity.actor_id or activity.actor_jid or "")
+        if activity.is_typing is False:
+            await self._delete_typing_message(key, "typing stopped")
+            return
+
+        topic_message = self._activity_topic_message(activity)
+        entry = await self._get_or_create_topic(topic_message)
+        await self._send_typing_action(entry)
+
+        existing = self._typing_messages.get(key)
+        if existing:
+            self._schedule_delete_message(key, existing[0], existing[1], TYPING_TTL_SECONDS, "typing stale")
+            logger.debug(
+                "Typing indicator refreshed: key=%s topic_id=%s message_id=%s",
+                key,
+                entry.topic_id,
+                existing[1],
+            )
+            return
+
+        logger.info(
+            "Messenger -> Telegram typing: transport=%s messenger_id=%s actor=%s topic_id=%s",
+            activity.transport,
+            activity.messenger_id,
+            activity.actor_name or activity.actor_id or "-",
+            entry.topic_id,
+        )
+        sent = await self._send_activity_with_topic_recovery(entry, activity, self._activity_reply_to_tg(activity))
+        self._typing_messages[key] = (sent.chat_id, sent.message_id)
+        self._schedule_delete_message(key, sent.chat_id, sent.message_id, TYPING_TTL_SECONDS, "typing stale")
+        logger.info(
+            "Messenger -> Telegram typing sent: topic_id=%s tg_message_id=%s key=%s",
+            sent.message_thread_id or entry.topic_id,
+            sent.message_id,
+            key,
+        )
+
+    async def _send_typing_action(self, entry: TopicEntry) -> None:
+        if self.bot is None:
+            return
+        kwargs = {
+            "chat_id": self.config.telegram_group_id,
+            "action": ChatAction.TYPING,
+        }
+        if entry.topic_id > 1:
+            kwargs["message_thread_id"] = entry.topic_id
+        try:
+            await self._telegram_call(self.bot.send_chat_action, **kwargs)
+        except TelegramError as exc:
+            logger.debug("Could not send Telegram typing action: topic_id=%s error=%s", entry.topic_id, exc)
+
+    async def _clear_typing_for_message(self, message: IncomingMessengerMessage) -> None:
+        actor_candidates = [message.sender_id, self._jid_user(message.sender_jid), message.sender_jid]
+        seen: set[str] = set()
+        for actor in actor_candidates:
+            clean_actor = str(actor or "").strip()
+            if not clean_actor or clean_actor in seen:
+                continue
+            seen.add(clean_actor)
+            await self._delete_typing_message(
+                self._typing_key(message.transport, message.messenger_id, clean_actor),
+                "new Messenger message",
+            )
+
+    async def _delete_typing_message(self, key: str, reason: str) -> None:
+        existing = self._typing_messages.pop(key, None)
+        task = self._ephemeral_delete_tasks.pop(key, None)
+        if task:
+            task.cancel()
+        if existing is None:
+            return
+        await self._delete_telegram_message(existing[0], existing[1], reason)
+
+    def _schedule_delete_message(self, key: str, chat_id: int, message_id: int, delay: float, reason: str) -> None:
+        old_task = self._ephemeral_delete_tasks.pop(key, None)
+        if old_task:
+            old_task.cancel()
+        self._ephemeral_delete_tasks[key] = asyncio.create_task(
+            self._delete_message_later(key, chat_id, message_id, delay, reason)
+        )
+
+    async def _delete_message_later(self, key: str, chat_id: int, message_id: int, delay: float, reason: str) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self._delete_telegram_message(chat_id, message_id, reason)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            current_task = asyncio.current_task()
+            if self._ephemeral_delete_tasks.get(key) is current_task:
+                self._ephemeral_delete_tasks.pop(key, None)
+                self._typing_messages.pop(key, None)
+
+    async def _delete_telegram_message(self, chat_id: int, message_id: int, reason: str) -> None:
+        if self.bot is None:
+            return
+        try:
+            await self._telegram_call(self.bot.delete_message, chat_id=chat_id, message_id=message_id)
+            logger.info("Deleted ephemeral Telegram message: chat_id=%s message_id=%s reason=%s", chat_id, message_id, reason)
+        except TelegramError as exc:
+            logger.debug("Could not delete ephemeral Telegram message: chat_id=%s message_id=%s reason=%s error=%s", chat_id, message_id, reason, exc)
+
+    @staticmethod
+    def _typing_key(transport: str, messenger_id: str, actor_id: str) -> str:
+        return f"typing:{transport}:{messenger_id}:{actor_id}"
+
+    @staticmethod
+    def _jid_user(value: Optional[str]) -> str:
+        text = str(value or "").strip()
+        if "@" not in text:
+            return text
+        return text.split("@", 1)[0]
 
     async def _get_or_create_topic(self, message: IncomingMessengerMessage) -> TopicEntry:
         existing = self.store.get_topic_by_messenger(message.transport, message.messenger_id)

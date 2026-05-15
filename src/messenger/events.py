@@ -26,6 +26,22 @@ def _first_int(*values: Any) -> int:
     return 0
 
 
+def _first_bool(*values: Any) -> bool:
+    for value in values:
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    return False
+
+
 def _jid_user(value: Any) -> str:
     text = _first_text(value)
     if "@" not in text:
@@ -187,7 +203,7 @@ def parse_messenger_activity(event: dict[str, Any]) -> Optional[IncomingMessenge
             thread_id=thread_id,
             actor_id=actor_id,
             actor_name=actor_id,
-            is_typing=bool(data.get("isTyping") or data.get("is_typing")),
+            is_typing=_first_bool(data.get("isTyping"), data.get("is_typing")),
             timestamp_ms=timestamp_ms,
             raw_event_type=event_type,
             raw=event,

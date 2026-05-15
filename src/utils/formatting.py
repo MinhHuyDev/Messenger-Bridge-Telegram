@@ -69,7 +69,7 @@ def format_messenger_activity(activity: IncomingMessengerActivity) -> str:
     elif activity.kind == "message_unsend":
         parts.append("unsent a message")
     elif activity.kind == "typing":
-        parts.append("is typing" if activity.is_typing else "stopped typing")
+        parts.append("is typing..." if activity.is_typing else "stopped typing")
     elif activity.kind == "read_receipt":
         parts.append("read messages in this conversation")
     elif activity.kind == "e2ee_receipt":
