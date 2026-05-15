@@ -40,7 +40,7 @@ class MessengerClient:
 
     def _prepare_fbchat_import(self) -> None:
         if self.config.fbchat_v2_src_path is None:
-            logger.debug("FBCHAT_V2_SRC_PATH is not set; relying on default Python import path")
+            logger.debug("FBCHAT_V2_SRC_PATH is not set; relying on installed fbchat-v2/Python import path")
             return
         if not self.config.fbchat_v2_src_path.exists():
             raise RuntimeError(f"FBCHAT_V2_SRC_PATH does not exist: {self.config.fbchat_v2_src_path}")
@@ -56,16 +56,34 @@ class MessengerClient:
             sys.path.insert(0, path)
         logger.debug("Prepared fbchat-v2 import path: %s", path)
 
+    @staticmethod
+    def _import_fbchat_module(module_name: str):
+        root_name = module_name.split(".", 1)[0]
+        try:
+            return import_module(module_name)
+        except ModuleNotFoundError as top_level_exc:
+            if top_level_exc.name not in {root_name, module_name}:
+                raise
+            try:
+                return import_module(f"fbchat_v2.{module_name}")
+            except ModuleNotFoundError as namespaced_exc:
+                namespaced_root = f"fbchat_v2.{root_name}"
+                namespaced_name = f"fbchat_v2.{module_name}"
+                if namespaced_exc.name in {"fbchat_v2", namespaced_root, namespaced_name}:
+                    raise top_level_exc from namespaced_exc
+                raise
+
     def login(self) -> None:
         self._prepare_fbchat_import()
         logger.info("Logging in to Messenger with fbchat-v2")
 
         try:
-            data_get_home = import_module("_core._session").dataGetHome
+            data_get_home = self._import_fbchat_module("_core._session").dataGetHome
         except ModuleNotFoundError as exc:
             raise RuntimeError(
-                "Could not import fbchat-v2 internal modules. Set FBCHAT_V2_SRC_PATH "
-                "to the fbchat-v2/src folder, for example: FBCHAT_V2_SRC_PATH=../fbchat-v2/src"
+                "Could not import fbchat-v2 internal modules. Install fbchat-v2 from PyPI "
+                "or set FBCHAT_V2_SRC_PATH to the fbchat-v2/src folder. "
+                "For PyPI mode, set FBCHAT_V2_USE_PYPI=1 after installing requirements."
             ) from exc
 
         data_fb = data_get_home(self.config.facebook_cookie)
@@ -81,8 +99,8 @@ class MessengerClient:
         if self.data_fb is None:
             self.login()
 
-        listening_e2ee_event = import_module("_messaging._listening_e2ee").listeningE2EEEvent
-        e2ee_sender = import_module("_messaging._send_e2ee").api
+        listening_e2ee_event = self._import_fbchat_module("_messaging._listening_e2ee").listeningE2EEEvent
+        e2ee_sender = self._import_fbchat_module("_messaging._send_e2ee").api
 
         self._event_callback = event_callback
         self.listener = listening_e2ee_event(
@@ -153,7 +171,7 @@ class MessengerClient:
 
         try:
             requests = import_module("requests")
-            utils = import_module("_core._utils")
+            utils = self._import_fbchat_module("_core._utils")
             data_form = utils.formAll(self.data_fb, requireGraphql=False)
             data_form["ids[0]"] = user_id
 

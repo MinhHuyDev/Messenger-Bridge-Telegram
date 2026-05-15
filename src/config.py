@@ -122,8 +122,12 @@ def load_config() -> AppConfig:
     _load_dotenv()
 
     data_dir = _resolve_path(os.environ.get("DATA_DIR"), "data")
+    use_pypi_fbchat = _env_bool("FBCHAT_V2_USE_PYPI", False)
     fbchat_src_raw = os.environ.get("FBCHAT_V2_SRC_PATH", "").strip()
-    fbchat_src = _resolve_path(fbchat_src_raw, fbchat_src_raw) if fbchat_src_raw else _default_fbchat_src_path()
+    if use_pypi_fbchat:
+        fbchat_src = None
+    else:
+        fbchat_src = _resolve_path(fbchat_src_raw, fbchat_src_raw) if fbchat_src_raw else _default_fbchat_src_path()
     e2ee_bin = os.environ.get("FBCHAT_E2EE_BIN") or _default_e2ee_binary()
 
     return AppConfig(
