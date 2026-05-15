@@ -39,6 +39,8 @@ REACTION_STATE_RETENTION_MS = 6 * 60 * 60 * 1000
 PHOTO_CAPTION_LIMIT = 1024
 MEDIA_DOWNLOAD_TIMEOUT = (10, 45)
 MEDIA_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
+TOPIC_ICON_USER_COLOR = 0x6FB9F0
+TOPIC_ICON_GROUP_COLOR = 0x8EEE98
 MEDIA_DOWNLOAD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -385,15 +387,17 @@ class MessengerTelegramBridge:
 
             display_name = await self._resolve_topic_display_name(message)
             name = topic_name(display_name, message.transport)
+            topic_kind = self._topic_kind(message)
             logger.info(
-                "Creating Telegram topic: name=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s",
+                "Creating Telegram topic: name=%s transport=%s topic_kind=%s messenger_id=%s thread_id=%s chat_jid=%s",
                 name,
                 message.transport,
+                topic_kind,
                 message.messenger_id,
                 message.thread_id or "-",
                 message.chat_jid or "-",
             )
-            topic_id = await self._create_forum_topic(name, message.transport)
+            topic_id = await self._create_forum_topic(name, message)
             entry = self.store.set_topic(TopicEntry(
                 topic_id=topic_id,
                 messenger_id=message.messenger_id,
@@ -588,9 +592,32 @@ class MessengerTelegramBridge:
             return True
         return message.thread_type not in {0, 1}
 
-    async def _create_forum_topic(self, name: str, transport: str) -> int:
+    @staticmethod
+    def _is_group_message(message: IncomingMessengerMessage) -> bool:
+        if MessengerTelegramBridge._is_regular_group_message(message):
+            return True
+        if message.thread_type not in {0, 1}:
+            return True
+
+        thread_id = str(message.thread_id or message.messenger_id or "").strip()
+        sender_id = str(message.sender_id or "").strip()
+        if message.transport == "e2ee" and message.thread_name and thread_id and sender_id and thread_id != sender_id:
+            return True
+        return False
+
+    @staticmethod
+    def _topic_kind(message: IncomingMessengerMessage) -> str:
+        return "group" if MessengerTelegramBridge._is_group_message(message) else "user"
+
+    @staticmethod
+    def _topic_icon_color(message: IncomingMessengerMessage) -> int:
+        if MessengerTelegramBridge._is_group_message(message):
+            return TOPIC_ICON_GROUP_COLOR
+        return TOPIC_ICON_USER_COLOR
+
+    async def _create_forum_topic(self, name: str, message: IncomingMessengerMessage) -> int:
         assert self.bot is not None
-        icon_color = 0x6FB9F0 if transport == "e2ee" else 0xFFB86C
+        icon_color = self._topic_icon_color(message)
         try:
             topic = await self._telegram_call(
                 self.bot.create_forum_topic,
