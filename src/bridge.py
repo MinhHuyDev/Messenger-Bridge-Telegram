@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
+from urllib.parse import urlparse
 
-from telegram import Bot, Message, MessageReactionUpdated, ReplyParameters
+import requests
+from telegram import Bot, InputFile, Message, MessageReactionUpdated, ReplyParameters
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application
@@ -15,7 +18,7 @@ from telegram.ext import Application
 from config import AppConfig
 from messenger.client import MessengerClient
 from messenger.events import parse_messenger_activity, parse_messenger_event
-from models import IncomingMessengerActivity, IncomingMessengerMessage, QuoteData, TopicEntry
+from models import IncomingMessengerActivity, IncomingMessengerMessage, MessengerAttachment, QuoteData, TopicEntry
 from store import BridgeStore
 from utils.formatting import (
     escape_html,
@@ -31,6 +34,14 @@ from utils.formatting import (
 logger = logging.getLogger(__name__)
 READ_RECEIPT_TTL_SECONDS = 5.0
 TYPING_TTL_SECONDS = 20.0
+PHOTO_CAPTION_LIMIT = 1024
+MEDIA_DOWNLOAD_TIMEOUT = (10, 45)
+MEDIA_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
+MEDIA_DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+}
 
 
 def _preview(value: object, limit: int = 180) -> str:
@@ -529,10 +540,27 @@ class MessengerTelegramBridge:
         generic_names = {
             str(message.messenger_id or ""),
             str(message.sender_id or ""),
+            str(message.sender_name or ""),
             str(message.thread_id or ""),
             str(message.chat_jid or ""),
         }
+        if MessengerTelegramBridge._is_regular_group_message(message) and old == str(message.sender_name or "").strip():
+            return True
+        if old.lower().startswith("messenger group "):
+            return True
         return old in generic_names or old.isdigit() or "@" in old
+
+    @staticmethod
+    def _is_regular_group_message(message: IncomingMessengerMessage) -> bool:
+        if message.transport != "regular":
+            return False
+        thread_id = str(message.thread_id or message.messenger_id or "").strip()
+        sender_id = str(message.sender_id or "").strip()
+        if not thread_id:
+            return False
+        if sender_id and thread_id != sender_id:
+            return True
+        return message.thread_type not in {0, 1}
 
     async def _create_forum_topic(self, name: str, transport: str) -> int:
         assert self.bot is not None
@@ -577,12 +605,155 @@ class MessengerTelegramBridge:
         use_topic: bool = True,
     ) -> Message:
         assert self.bot is not None
-        kwargs = {
-            "chat_id": self.config.telegram_group_id,
+        image_attachments = self._uploadable_image_attachments(message)
+        if image_attachments:
+            sent = await self._send_inbound_images_to_telegram(
+                entry,
+                message,
+                image_attachments,
+                reply_to_tg_message_id,
+                use_topic=use_topic,
+            )
+            if sent is not None:
+                return sent
+
+        return await self._send_inbound_text_to_telegram(entry, message, reply_to_tg_message_id, use_topic=use_topic)
+
+    async def _send_inbound_text_to_telegram(
+        self,
+        entry: TopicEntry,
+        message: IncomingMessengerMessage,
+        reply_to_tg_message_id: Optional[int],
+        *,
+        use_topic: bool = True,
+    ) -> Message:
+        assert self.bot is not None
+        kwargs = self._telegram_send_kwargs(entry, reply_to_tg_message_id, use_topic=use_topic)
+        kwargs.update({
             "text": format_messenger_message(message),
             "parse_mode": ParseMode.HTML,
             "disable_web_page_preview": False,
-        }
+        })
+        return await self._telegram_call(self.bot.send_message, **kwargs)
+
+    async def _send_inbound_images_to_telegram(
+        self,
+        entry: TopicEntry,
+        message: IncomingMessengerMessage,
+        image_attachments: list[MessengerAttachment],
+        reply_to_tg_message_id: Optional[int],
+        *,
+        use_topic: bool = True,
+    ) -> Optional[Message]:
+        uploaded_ids = {id(attachment) for attachment in image_attachments}
+        caption_attachments = [
+            attachment
+            for attachment in message.attachments
+            if id(attachment) not in uploaded_ids
+        ]
+        first_caption = self._messenger_photo_caption(message, caption_attachments)
+        first_sent: Optional[Message] = None
+        failed_attachments: list[MessengerAttachment] = []
+
+        for index, attachment in enumerate(image_attachments, start=1):
+            sent = await self._send_image_attachment_to_telegram(
+                entry,
+                attachment,
+                first_caption if first_sent is None else None,
+                reply_to_tg_message_id,
+                use_topic=use_topic,
+                index=index,
+            )
+            if sent is None:
+                failed_attachments.append(attachment)
+                continue
+            if first_sent is None:
+                first_sent = sent
+
+        if first_sent is not None and failed_attachments:
+            fallback_message = replace(message, text="", attachments=failed_attachments)
+            await self._send_inbound_text_to_telegram(entry, fallback_message, None, use_topic=use_topic)
+
+        return first_sent
+
+    async def _send_image_attachment_to_telegram(
+        self,
+        entry: TopicEntry,
+        attachment: MessengerAttachment,
+        caption: Optional[str],
+        reply_to_tg_message_id: Optional[int],
+        *,
+        use_topic: bool,
+        index: int,
+    ) -> Optional[Message]:
+        assert self.bot is not None
+        try:
+            data, content_type = await asyncio.to_thread(self._download_attachment_bytes, attachment)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Messenger image download failed: attachment_index=%s type=%s filename=%s origin=%s error=%s",
+                index,
+                attachment.type or "-",
+                attachment.file_name or "-",
+                self._url_origin(attachment.best_url),
+                exc,
+            )
+            return None
+
+        filename = self._attachment_filename(attachment, content_type, index)
+        logger.info(
+            "Messenger -> Telegram uploading image: topic_id=%s filename=%s mime=%s bytes=%s",
+            entry.topic_id,
+            filename,
+            content_type or attachment.mime_type or "-",
+            len(data),
+        )
+
+        kwargs = self._telegram_send_kwargs(entry, reply_to_tg_message_id, use_topic=use_topic)
+        kwargs["photo"] = InputFile(data, filename=filename)
+        if caption:
+            kwargs["caption"] = truncate(caption, PHOTO_CAPTION_LIMIT)
+            kwargs["parse_mode"] = ParseMode.HTML
+
+        try:
+            return await self._telegram_call(self.bot.send_photo, **kwargs)
+        except TelegramError as exc:
+            if self._is_topic_missing_error(exc):
+                raise
+            logger.warning(
+                "Telegram send_photo failed, retrying as document: topic_id=%s filename=%s error=%s",
+                entry.topic_id,
+                filename,
+                exc,
+            )
+
+        document_kwargs = self._telegram_send_kwargs(entry, reply_to_tg_message_id, use_topic=use_topic)
+        document_kwargs["document"] = InputFile(data, filename=filename)
+        if caption:
+            document_kwargs["caption"] = truncate(caption, PHOTO_CAPTION_LIMIT)
+            document_kwargs["parse_mode"] = ParseMode.HTML
+
+        try:
+            return await self._telegram_call(self.bot.send_document, **document_kwargs)
+        except TelegramError as exc:
+            if self._is_topic_missing_error(exc):
+                raise
+            logger.warning(
+                "Telegram send_document failed for Messenger image: topic_id=%s filename=%s error=%s",
+                entry.topic_id,
+                filename,
+                exc,
+            )
+            return None
+
+    def _telegram_send_kwargs(
+        self,
+        entry: TopicEntry,
+        reply_to_tg_message_id: Optional[int],
+        *,
+        use_topic: bool = True,
+    ) -> dict[str, object]:
+        kwargs: dict[str, object] = {"chat_id": self.config.telegram_group_id}
         if use_topic:
             kwargs["message_thread_id"] = entry.topic_id
         if reply_to_tg_message_id:
@@ -590,7 +761,91 @@ class MessengerTelegramBridge:
                 message_id=reply_to_tg_message_id,
                 allow_sending_without_reply=True,
             )
-        return await self._telegram_call(self.bot.send_message, **kwargs)
+        return kwargs
+
+    @staticmethod
+    def _uploadable_image_attachments(message: IncomingMessengerMessage) -> list[MessengerAttachment]:
+        return [
+            attachment
+            for attachment in message.attachments
+            if MessengerTelegramBridge._is_uploadable_image_attachment(attachment)
+        ]
+
+    @staticmethod
+    def _is_uploadable_image_attachment(attachment: MessengerAttachment) -> bool:
+        if not attachment.best_url:
+            return False
+        attachment_type = str(attachment.type or "").strip().lower()
+        mime_type = str(attachment.mime_type or "").strip().lower()
+        if attachment_type in {"sticker", "gif"}:
+            return False
+        return attachment_type == "image" or mime_type.startswith("image/")
+
+    @staticmethod
+    def _messenger_photo_caption(
+        message: IncomingMessengerMessage,
+        remaining_attachments: list[MessengerAttachment],
+    ) -> str:
+        if message.text or remaining_attachments:
+            return truncate(format_messenger_message(replace(message, attachments=remaining_attachments)), PHOTO_CAPTION_LIMIT)
+
+        sender = escape_html(truncate(message.sender_name or message.sender_id or "Messenger", 80))
+        badge = " <code>E2EE</code>" if message.transport == "e2ee" else ""
+        return f"<b>{sender}</b>{badge}"
+
+    @staticmethod
+    def _download_attachment_bytes(attachment: MessengerAttachment) -> tuple[bytes, str]:
+        url = attachment.best_url
+        if not url:
+            raise ValueError("attachment has no URL")
+
+        response = requests.get(
+            url,
+            headers=MEDIA_DOWNLOAD_HEADERS,
+            stream=True,
+            timeout=MEDIA_DOWNLOAD_TIMEOUT,
+        )
+        response.raise_for_status()
+
+        content_type = str(response.headers.get("content-type") or attachment.mime_type or "")
+        content_type = content_type.split(";", 1)[0].strip().lower()
+        if content_type.startswith("text/") or content_type in {"application/json", "application/xml"}:
+            raise ValueError(f"downloaded content is not an image: {content_type}")
+
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            data.extend(chunk)
+            if len(data) > MEDIA_DOWNLOAD_MAX_BYTES:
+                raise ValueError("image is larger than upload limit")
+
+        if not data:
+            raise ValueError("downloaded image is empty")
+
+        return bytes(data), content_type
+
+    @staticmethod
+    def _attachment_filename(attachment: MessengerAttachment, content_type: str, index: int) -> str:
+        parsed_name = ""
+        if attachment.file_name:
+            parsed_name = str(attachment.file_name).replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if not parsed_name and attachment.best_url:
+            parsed_name = urlparse(attachment.best_url).path.rsplit("/", 1)[-1].strip()
+        if not parsed_name:
+            parsed_name = f"messenger-image-{index}"
+
+        if "." not in parsed_name:
+            extension = mimetypes.guess_extension(content_type or attachment.mime_type or "") or ".jpg"
+            parsed_name = f"{parsed_name}{extension}"
+        return parsed_name
+
+    @staticmethod
+    def _url_origin(url: Optional[str]) -> str:
+        if not url:
+            return "-"
+        parsed = urlparse(url)
+        return parsed.netloc or "-"
 
     async def _send_inbound_with_topic_recovery(
         self,
@@ -612,7 +867,7 @@ class MessengerTelegramBridge:
                 entry.messenger_id,
             )
             await self._notify_general(
-                f"Telegram topic <code>{entry.topic_id}</code> for <b>{escape_html(entry.name)}</b> no longer exists. "
+                f"Telegram topic {entry.topic_id} for {entry.name} no longer exists. "
                 "Creating a fresh topic and retrying."
             )
 
@@ -678,7 +933,7 @@ class MessengerTelegramBridge:
                 entry.messenger_id,
             )
             await self._notify_general(
-                f"Telegram topic <code>{entry.topic_id}</code> for <b>{escape_html(entry.name)}</b> no longer exists. "
+                f"Telegram topic {entry.topic_id} for {entry.name} no longer exists. "
                 "Creating a fresh topic and retrying."
             )
 

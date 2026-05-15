@@ -249,15 +249,40 @@ class MessengerClient:
         return fallback_name
 
     def resolve_topic_display_name(self, message: IncomingMessengerMessage) -> Optional[str]:
+        event_thread_name = str(message.thread_name or "").strip()
+        if event_thread_name:
+            self._thread_name_cache[message.thread_id] = event_thread_name
+            return event_thread_name
+
         thread_name = self.resolve_thread_name(message.thread_id)
         if thread_name:
             return thread_name
+
+        if self._is_regular_group_message(message):
+            return self._group_fallback_name(message.thread_id or message.messenger_id)
 
         for candidate_id in self._candidate_profile_ids(message):
             user_name = self.resolve_user_name(candidate_id)
             if user_name:
                 return user_name
         return None
+
+    @staticmethod
+    def _is_regular_group_message(message: IncomingMessengerMessage) -> bool:
+        if message.transport != "regular":
+            return False
+        thread_id = str(message.thread_id or message.messenger_id or "").strip()
+        sender_id = str(message.sender_id or "").strip()
+        if not thread_id:
+            return False
+        if sender_id and thread_id != sender_id:
+            return True
+        return message.thread_type not in {0, 1}
+
+    @staticmethod
+    def _group_fallback_name(thread_id: str) -> str:
+        clean_id = str(thread_id or "").strip()
+        return f"Messenger group {clean_id}" if clean_id else "Messenger group"
 
     def _candidate_profile_ids(self, message: IncomingMessengerMessage) -> list[str]:
         candidates = [

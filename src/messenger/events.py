@@ -68,6 +68,8 @@ def parse_messenger_event(event: dict[str, Any]) -> Optional[IncomingMessengerMe
     data = event.get("data") or {}
     transport: Transport = "e2ee" if event_type == "e2eeMessage" else "regular"
     thread_id = _first_text(data.get("threadId"), data.get("thread_id"))
+    thread_name = _first_text(data.get("threadName"), data.get("thread_name"), data.get("nameThread"))
+    thread_type = _first_int(data.get("threadType"), data.get("thread_type"))
     chat_jid = _first_text(data.get("chatJid"), data.get("chat_jid")) or None
     messenger_id = chat_jid if transport == "e2ee" and chat_jid else thread_id
     if not messenger_id:
@@ -101,6 +103,8 @@ def parse_messenger_event(event: dict[str, Any]) -> Optional[IncomingMessengerMe
         text=_first_text(data.get("text"), data.get("body")),
         message_id=_first_text(data.get("id"), data.get("messageId"), data.get("message_id")),
         timestamp_ms=int(data.get("timestampMs") or data.get("timestamp") or 0),
+        thread_name=thread_name,
+        thread_type=thread_type,
         attachments=attachments,
         reply_to_message_id=_first_text(reply.get("messageId"), reply.get("message_id")) or None,
         reply_to_sender_id=_first_text(reply.get("senderId"), reply.get("sender_id")) or None,

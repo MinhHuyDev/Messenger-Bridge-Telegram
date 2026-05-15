@@ -42,6 +42,8 @@ class IncomingMessengerMessage:
     text: str
     message_id: str
     timestamp_ms: int = 0
+    thread_name: str = ""
+    thread_type: int = 0
     attachments: list[MessengerAttachment] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_sender_id: Optional[str] = None
