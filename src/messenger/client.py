@@ -185,13 +185,6 @@ class MessengerClient:
                 if snapshot_name:
                     self._thread_name_cache[clean_id] = snapshot_name
                     return snapshot_name
-
-                info = thread_data_mod.features(data_get, clean_id, "threadInfomation")
-                if isinstance(info, dict):
-                    name = str(info.get("nameThread") or "").strip()
-                    if name:
-                        self._thread_name_cache[clean_id] = name
-                        return name
         except Exception as exc:  # noqa: BLE001
             print(f"[Messenger] Could not resolve thread name for {clean_id}: {exc}")
         return None

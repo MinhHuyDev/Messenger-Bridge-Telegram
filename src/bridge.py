@@ -8,7 +8,7 @@ from typing import Optional
 
 from telegram import Bot, Message, ReplyParameters
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter, TelegramError
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application
 
 from config import AppConfig
@@ -679,3 +679,15 @@ class MessengerTelegramBridge:
                 if attempt == 4:
                     raise
                 await asyncio.sleep(float(exc.retry_after) + 1.0)
+            except TimedOut as exc:
+                if attempt == 4:
+                    raise
+                delay = 1.0 + attempt
+                print(f"[Telegram] Timed out calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")
+                await asyncio.sleep(delay)
+            except NetworkError as exc:
+                if attempt == 4:
+                    raise
+                delay = min(10.0, 2.0 + (attempt * 2.0))
+                print(f"[Telegram] Network error calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")
+                await asyncio.sleep(delay)
