@@ -169,8 +169,9 @@ class MessengerClient:
             return self._thread_name_cache[clean_id]
 
         try:
-            thread_data_mod = import_module("_features._thread._all_thread_data")
-            fbt = getattr(self.listener, "fbt", None) or thread_data_mod.func(self.data_fb)
+            fbt = getattr(self.listener, "fbt", None)
+            if not isinstance(fbt, dict) or not fbt:
+                return None
             all_threads = (fbt.get("dataAllThread") or {}) if isinstance(fbt, dict) else {}
             ids = [str(item) for item in (all_threads.get("threadIDList") or [])]
             names = [str(item).strip() for item in (all_threads.get("threadNameList") or [])]
