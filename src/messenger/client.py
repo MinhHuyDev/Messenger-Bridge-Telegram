@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import sys
 import json
+import logging
 import threading
 import traceback
 from importlib import import_module
@@ -13,6 +14,7 @@ from models import IncomingMessengerMessage, QuoteData, TopicEntry
 
 
 MessengerEventCallback = Callable[[dict], None]
+logger = logging.getLogger(__name__)
 
 
 class MessengerClient:
@@ -38,6 +40,7 @@ class MessengerClient:
 
     def _prepare_fbchat_import(self) -> None:
         if self.config.fbchat_v2_src_path is None:
+            logger.debug("FBCHAT_V2_SRC_PATH is not set; relying on default Python import path")
             return
         if not self.config.fbchat_v2_src_path.exists():
             raise RuntimeError(f"FBCHAT_V2_SRC_PATH does not exist: {self.config.fbchat_v2_src_path}")
@@ -51,9 +54,11 @@ class MessengerClient:
         path = str(self.config.fbchat_v2_src_path)
         if path not in sys.path:
             sys.path.insert(0, path)
+        logger.debug("Prepared fbchat-v2 import path: %s", path)
 
     def login(self) -> None:
         self._prepare_fbchat_import()
+        logger.info("Logging in to Messenger with fbchat-v2")
 
         try:
             data_get_home = import_module("_core._session").dataGetHome
@@ -70,6 +75,7 @@ class MessengerClient:
 
         self.data_fb = data_fb
         self.self_id = facebook_id
+        logger.info("Messenger login complete: facebook_id=%s", self.self_id)
 
     def start(self, event_callback: MessengerEventCallback) -> None:
         if self.data_fb is None:
@@ -89,6 +95,12 @@ class MessengerClient:
         )
         self.listener.on_message(event_callback)
         self.e2ee_sender = e2ee_sender(listener=self.listener)
+        logger.info(
+            "Messenger listener configured: e2ee_enabled=%s memory_only=%s binary=%s",
+            self.config.fbchat_enable_e2ee,
+            self.config.fbchat_e2ee_memory_only,
+            self.config.fbchat_e2ee_bin or "auto/default",
+        )
 
         self._thread = threading.Thread(
             target=self._run_listener,
@@ -99,9 +111,11 @@ class MessengerClient:
 
     def _run_listener(self) -> None:
         try:
+            logger.info("Messenger listener connecting MQTT")
             self.listener.connect_mqtt()
         except BaseException as exc:  # noqa: BLE001 - surface listener thread failures
             self._last_error = exc
+            logger.exception("Messenger listener stopped with error")
             traceback.print_exc()
             if self._event_callback:
                 self._event_callback({
@@ -112,6 +126,7 @@ class MessengerClient:
     def stop(self) -> None:
         if self.listener is not None:
             try:
+                logger.info("Stopping Messenger listener")
                 self.listener.stop()
             except Exception:  # noqa: BLE001
                 pass
@@ -158,7 +173,7 @@ class MessengerClient:
                 "firstName": profile.get("firstName"),
             }
         except Exception as exc:  # noqa: BLE001
-            print(f"[Messenger] Could not resolve user name for {user_id}: {exc}")
+            logger.debug("Could not resolve Messenger user name for %s: %s", user_id, exc)
             return None
 
     def resolve_thread_name(self, thread_id: str) -> Optional[str]:
@@ -187,7 +202,7 @@ class MessengerClient:
                     self._thread_name_cache[clean_id] = snapshot_name
                     return snapshot_name
         except Exception as exc:  # noqa: BLE001
-            print(f"[Messenger] Could not resolve thread name for {clean_id}: {exc}")
+            logger.debug("Could not resolve Messenger thread name for %s: %s", clean_id, exc)
         return None
 
     def _resolve_name_from_thread_snapshot(self, data_get: str, lookup_id: str) -> Optional[str]:
@@ -285,6 +300,13 @@ class MessengerClient:
             if self.e2ee_sender is None:
                 raise RuntimeError("E2EE sender is not ready")
             reply_id, reply_sender = self._e2ee_reply_parts(quote)
+            logger.info(
+                "Sending E2EE Messenger text: chat_jid=%s reply_id=%s timeout=%s text_len=%s",
+                entry.chat_jid or entry.messenger_id,
+                reply_id or "-",
+                self.config.fbchat_e2ee_send_timeout,
+                len(content),
+            )
             return self.e2ee_sender.send(
                 chat_jid=entry.chat_jid or entry.messenger_id,
                 contentSend=content,
@@ -294,6 +316,12 @@ class MessengerClient:
             )
 
         reply_id = quote.message_id if quote and quote.transport == "regular" else ""
+        logger.info(
+            "Sending regular Messenger text: thread_id=%s reply_id=%s text_len=%s",
+            entry.thread_id or entry.messenger_id,
+            reply_id or "-",
+            len(content),
+        )
         data = self.listener.send_message(
             int(entry.thread_id or entry.messenger_id),
             content,
@@ -329,6 +357,14 @@ class MessengerClient:
         if entry.transport == "e2ee":
             reply_id, reply_sender = self._e2ee_reply_parts(quote)
             chat_jid = entry.chat_jid or entry.messenger_id
+            logger.info(
+                "Sending E2EE Messenger sticker/media: chat_jid=%s filename=%s mime=%s bytes=%s reply_id=%s",
+                chat_jid,
+                clean_filename,
+                clean_mime,
+                len(file_data),
+                reply_id or "-",
+            )
             if clean_mime == "image/webp" or clean_filename.lower().endswith(".webp"):
                 return self._call_bridge_send("sendE2EESticker", {
                     "chatJid": chat_jid,
@@ -361,6 +397,14 @@ class MessengerClient:
 
         thread_id = int(entry.thread_id or entry.messenger_id)
         reply_id = quote.message_id if quote and quote.transport == "regular" else ""
+        logger.info(
+            "Sending regular Messenger sticker/media: thread_id=%s filename=%s mime=%s bytes=%s reply_id=%s",
+            thread_id,
+            clean_filename,
+            clean_mime,
+            len(file_data),
+            reply_id or "-",
+        )
         if clean_mime.startswith("image/"):
             return self._call_bridge_send("sendImage", {
                 "threadId": thread_id,
@@ -383,6 +427,7 @@ class MessengerClient:
         if bridge is None:
             raise RuntimeError("Messenger bridge RPC is not connected")
         timeout = self.config.fbchat_e2ee_send_timeout if method.startswith("sendE2EE") else 60.0
+        logger.debug("Calling Messenger bridge RPC: method=%s timeout=%s", method, timeout)
         data = bridge.call(method, params, timeout=timeout)
         return self._normalize_send_result(data)
 
@@ -394,7 +439,7 @@ class MessengerClient:
         if not sender_jid and quote.sender_id == self.self_id:
             sender_jid = self._self_e2ee_jid()
         if not sender_jid:
-            print(f"[Messenger] E2EE reply metadata skipped for {quote.message_id}: missing sender JID")
+            logger.warning("E2EE reply metadata skipped for %s: missing sender JID", quote.message_id)
             return "", ""
         return quote.message_id, sender_jid
 

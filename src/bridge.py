@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import traceback
 from dataclasses import dataclass
@@ -27,6 +28,16 @@ from utils.formatting import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+def _preview(value: object, limit: int = 180) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 @dataclass
 class ForwardResult:
     ok: bool
@@ -46,6 +57,7 @@ class MessengerTelegramBridge:
     async def start(self, application: Application) -> None:
         self.bot = application.bot
         self.loop = asyncio.get_running_loop()
+        logger.info("Bridge starting: telegram_group_id=%s store_topics=%s", self.config.telegram_group_id, len(self.store.all_topics()))
         await self.bot.set_my_commands([
             ("status", "Show bridge status"),
             ("checktopics", "Check Telegram topic permissions"),
@@ -54,12 +66,15 @@ class MessengerTelegramBridge:
         ])
 
         await asyncio.to_thread(self.messenger.login)
+        logger.info("Messenger login OK: facebook_id=%s", self.messenger.self_id or "-")
         self.messenger.start(self._on_messenger_event_from_thread)
+        logger.info("Messenger listener thread started")
         await self._notify_general(
             "Messenger bridge started. Waiting for E2EE and regular Messenger events."
         )
 
     async def shutdown(self, application: Application) -> None:
+        logger.info("Bridge shutting down")
         self.messenger.stop()
 
     def _on_messenger_event_from_thread(self, event: dict) -> None:
@@ -77,8 +92,10 @@ class MessengerTelegramBridge:
 
     async def handle_messenger_event(self, event: dict) -> None:
         event_type = event.get("type")
+        logger.debug("Messenger raw event: type=%s keys=%s", event_type, sorted(event.keys()))
         if event_type in {"error", "disconnected"}:
             data = event.get("data") or {}
+            logger.error("Messenger %s: %s", event_type, data.get("message") or data)
             await self._notify_general(f"Messenger {event_type}: {data.get('message') or data}")
             return
 
@@ -87,11 +104,31 @@ class MessengerTelegramBridge:
             activity = parse_messenger_activity(event)
             if activity is not None:
                 await self.handle_messenger_activity(activity)
+            else:
+                logger.debug("Ignored Messenger event: type=%s", event_type)
             return
         if self.config.ignore_self_messages and message.sender_id == self.messenger.self_id:
+            logger.debug(
+                "Ignored self Messenger message: transport=%s messenger_id=%s message_id=%s",
+                message.transport,
+                message.messenger_id,
+                message.message_id,
+            )
             return
 
         await self._enrich_sender_name(message)
+        logger.info(
+            "Messenger -> Telegram received: transport=%s messenger_id=%s thread_id=%s chat_jid=%s sender=%s message_id=%s reply_to=%s text=%s attachments=%s",
+            message.transport,
+            message.messenger_id,
+            message.thread_id or "-",
+            message.chat_jid or "-",
+            message.sender_name or message.sender_id or "-",
+            message.message_id or "-",
+            message.reply_to_message_id or "-",
+            _preview(message.text),
+            len(message.attachments),
+        )
 
         entry = await self._get_or_create_topic(message)
         reply_to = None
@@ -99,6 +136,15 @@ class MessengerTelegramBridge:
             reply_to = self.store.get_tg_message_id(message.transport, message.reply_to_message_id)
 
         sent = await self._send_inbound_with_topic_recovery(entry, message, reply_to)
+        logger.info(
+            "Messenger -> Telegram sent: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s messenger_message_id=%s reply_to_tg=%s",
+            sent.message_thread_id or entry.topic_id,
+            sent.message_id,
+            message.transport,
+            message.messenger_id,
+            message.message_id or "-",
+            reply_to or "-",
+        )
         if message.message_id:
             quote = QuoteData(
                 message_id=message.message_id,
@@ -114,6 +160,12 @@ class MessengerTelegramBridge:
     async def handle_messenger_activity(self, activity: IncomingMessengerActivity) -> None:
         self._resolve_activity_context(activity)
         if not activity.messenger_id:
+            logger.warning(
+                "Messenger activity cannot be mapped: kind=%s raw_event_type=%s target_message_id=%s",
+                activity.kind,
+                activity.raw_event_type,
+                activity.target_message_id or "-",
+            )
             await self._notify_general(
                 f"Messenger activity {activity.raw_event_type or activity.kind} could not be mapped to a topic."
             )
@@ -121,16 +173,50 @@ class MessengerTelegramBridge:
 
         await self._enrich_activity_actor_name(activity)
         if not self._should_forward_activity(activity):
+            logger.debug(
+                "Messenger activity skipped by config/dedupe: kind=%s transport=%s messenger_id=%s actor=%s target=%s",
+                activity.kind,
+                activity.transport,
+                activity.messenger_id,
+                activity.actor_name or activity.actor_id or "-",
+                activity.target_message_id or "-",
+            )
             return
 
+        logger.info(
+            "Messenger -> Telegram activity: kind=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s actor=%s target=%s text=%s",
+            activity.kind,
+            activity.transport,
+            activity.messenger_id,
+            activity.thread_id or "-",
+            activity.chat_jid or "-",
+            activity.actor_name or activity.actor_id or "-",
+            activity.target_message_id or "-",
+            _preview(activity.text or activity.reaction or activity.receipt_type),
+        )
         topic_message = self._activity_topic_message(activity)
         entry = await self._get_or_create_topic(topic_message)
         reply_to = self._activity_reply_to_tg(activity)
         await self._send_activity_with_topic_recovery(entry, activity, reply_to)
+        logger.info(
+            "Messenger -> Telegram activity sent: topic_id=%s kind=%s reply_to_tg=%s",
+            entry.topic_id,
+            activity.kind,
+            reply_to or "-",
+        )
 
     async def _get_or_create_topic(self, message: IncomingMessengerMessage) -> TopicEntry:
         existing = self.store.get_topic_by_messenger(message.transport, message.messenger_id)
         if existing:
+            logger.debug(
+                "Topic mapping found: topic_id=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s name=%s",
+                existing.topic_id,
+                existing.transport,
+                existing.messenger_id,
+                existing.thread_id or "-",
+                existing.chat_jid or "-",
+                existing.name or "-",
+            )
             await self._maybe_rename_existing_topic(existing, message)
             return existing
 
@@ -139,11 +225,25 @@ class MessengerTelegramBridge:
         async with lock:
             existing = self.store.get_topic_by_messenger(message.transport, message.messenger_id)
             if existing:
+                logger.debug(
+                    "Topic mapping found after lock: topic_id=%s transport=%s messenger_id=%s",
+                    existing.topic_id,
+                    existing.transport,
+                    existing.messenger_id,
+                )
                 await self._maybe_rename_existing_topic(existing, message)
                 return existing
 
             display_name = await self._resolve_topic_display_name(message)
             name = topic_name(display_name, message.transport)
+            logger.info(
+                "Creating Telegram topic: name=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s",
+                name,
+                message.transport,
+                message.messenger_id,
+                message.thread_id or "-",
+                message.chat_jid or "-",
+            )
             topic_id = await self._create_forum_topic(name, message.transport)
             entry = self.store.set_topic(TopicEntry(
                 topic_id=topic_id,
@@ -153,6 +253,15 @@ class MessengerTelegramBridge:
                 thread_id=message.thread_id,
                 chat_jid=message.chat_jid,
             ))
+            logger.info(
+                "Topic mapping saved: topic_id=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s name=%s",
+                entry.topic_id,
+                entry.transport,
+                entry.messenger_id,
+                entry.thread_id or "-",
+                entry.chat_jid or "-",
+                entry.name or "-",
+            )
             await self._send_topic_intro(entry, message)
             return entry
 
@@ -273,8 +382,9 @@ class MessengerTelegramBridge:
             )
             self.store.update_topic_name(entry.topic_id, display_name)
             entry.name = display_name
+            logger.info("Telegram topic renamed: topic_id=%s name=%s", entry.topic_id, display_name)
         except TelegramError as exc:
-            print(f"[Telegram] Could not rename topic {entry.topic_id}: {exc}")
+            logger.warning("Could not rename Telegram topic %s: %s", entry.topic_id, exc)
 
     @staticmethod
     def _should_replace_topic_name(old_name: str, new_name: str, message: IncomingMessengerMessage) -> bool:
@@ -301,7 +411,7 @@ class MessengerTelegramBridge:
             )
             return topic.message_thread_id
         except TelegramError as exc:
-            print(f"[Telegram] Could not create forum topic, using General topic: {exc}")
+            logger.warning("Could not create Telegram forum topic, using General topic: %s", exc)
             await self._notify_general(
                 "Could not create Telegram topic. Using General topic instead. "
                 "Run /checktopics to verify the group is a forum supergroup and the bot has Manage Topics permission. "
@@ -321,7 +431,7 @@ class MessengerTelegramBridge:
                 disable_web_page_preview=True,
             )
         except TelegramError as exc:
-            print(f"[Telegram] Could not send topic intro: {exc}")
+            logger.warning("Could not send topic intro: topic_id=%s error=%s", entry.topic_id, exc)
 
     async def _send_inbound_to_telegram(
         self,
@@ -360,6 +470,12 @@ class MessengerTelegramBridge:
                 raise
 
             self.store.remove_topic(entry.topic_id)
+            logger.warning(
+                "Telegram topic stale during message send: topic_id=%s transport=%s messenger_id=%s",
+                entry.topic_id,
+                entry.transport,
+                entry.messenger_id,
+            )
             await self._notify_general(
                 f"Telegram topic <code>{entry.topic_id}</code> for <b>{escape_html(entry.name)}</b> no longer exists. "
                 "Creating a fresh topic and retrying."
@@ -420,6 +536,12 @@ class MessengerTelegramBridge:
                 raise
 
             self.store.remove_topic(entry.topic_id)
+            logger.warning(
+                "Telegram topic stale during activity send: topic_id=%s transport=%s messenger_id=%s",
+                entry.topic_id,
+                entry.transport,
+                entry.messenger_id,
+            )
             await self._notify_general(
                 f"Telegram topic <code>{entry.topic_id}</code> for <b>{escape_html(entry.name)}</b> no longer exists. "
                 "Creating a fresh topic and retrying."
@@ -445,16 +567,20 @@ class MessengerTelegramBridge:
 
     async def forward_telegram_message(self, message: Message) -> ForwardResult:
         if message.chat_id != self.config.telegram_group_id:
+            logger.debug("Ignored Telegram message from another chat: chat_id=%s message_id=%s", message.chat_id, message.message_id)
             return ForwardResult(False)
         if message.from_user and message.from_user.is_bot:
+            logger.debug("Ignored Telegram bot message: user_id=%s message_id=%s", message.from_user.id, message.message_id)
             return ForwardResult(False)
 
         topic_id = message.message_thread_id
         if not topic_id:
+            logger.info("Telegram message rejected: no topic message_id=%s", message.message_id)
             return ForwardResult(False, "Send messages inside a mapped forum topic.")
 
         entry = self.store.get_topic_by_id(topic_id)
         if entry is None:
+            logger.info("Telegram message rejected: unmapped topic_id=%s message_id=%s", topic_id, message.message_id)
             return ForwardResult(False, "This topic is not linked to a Messenger conversation.")
 
         quote = None
@@ -466,19 +592,58 @@ class MessengerTelegramBridge:
 
         text = telegram_message_to_text(message).strip()
         if not text:
+            logger.info("Telegram message rejected: no bridgeable content topic_id=%s tg_message_id=%s", topic_id, message.message_id)
             return ForwardResult(False, "This Telegram message has no bridgeable text content yet.")
 
+        sender = message.from_user.full_name if message.from_user else "-"
+        logger.info(
+            "Telegram -> Messenger received: topic_id=%s tg_message_id=%s from=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s reply_quote=%s text=%s",
+            topic_id,
+            message.message_id,
+            sender,
+            entry.transport,
+            entry.messenger_id,
+            entry.thread_id or "-",
+            entry.chat_jid or "-",
+            quote.message_id if quote else "-",
+            _preview(text),
+        )
         try:
             result = await asyncio.to_thread(self.messenger.send_text, entry, text, quote)
         except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Telegram -> Messenger failed: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s thread_id=%s",
+                topic_id,
+                message.message_id,
+                entry.transport,
+                entry.messenger_id,
+                entry.thread_id or "-",
+            )
             return ForwardResult(False, f"Messenger send failed: {exc}")
 
         if not isinstance(result, dict) or result.get("error"):
             payload = result.get("payload") if isinstance(result, dict) else result
+            logger.error(
+                "Telegram -> Messenger returned error: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s payload=%s",
+                topic_id,
+                message.message_id,
+                entry.transport,
+                entry.messenger_id,
+                payload,
+            )
             return ForwardResult(False, f"Messenger send failed: {payload}")
 
         payload = result.get("payload") or {}
         messenger_message_id = str(payload.get("messageID") or "")
+        logger.info(
+            "Telegram -> Messenger sent: topic_id=%s tg_message_id=%s messenger_message_id=%s transport=%s messenger_id=%s thread_id=%s",
+            topic_id,
+            message.message_id,
+            messenger_message_id or "-",
+            entry.transport,
+            entry.messenger_id,
+            entry.thread_id or "-",
+        )
         if messenger_message_id:
             self.store.save_message(
                 message.message_id,
@@ -508,6 +673,16 @@ class MessengerTelegramBridge:
             return ForwardResult(False)
 
         filename, mime_type, width, height = self._telegram_sticker_meta(sticker)
+        logger.info(
+            "Telegram -> Messenger sticker received: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s filename=%s mime=%s reply_quote=%s",
+            entry.topic_id,
+            message.message_id,
+            entry.transport,
+            entry.messenger_id,
+            filename,
+            mime_type,
+            quote.message_id if quote else "-",
+        )
         try:
             telegram_file = await self._telegram_call(self.bot.get_file, sticker.file_id)
             file_data = bytes(await telegram_file.download_as_bytearray())
@@ -522,14 +697,37 @@ class MessengerTelegramBridge:
                 quote,
             )
         except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Telegram -> Messenger sticker failed: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s",
+                entry.topic_id,
+                message.message_id,
+                entry.transport,
+                entry.messenger_id,
+            )
             return ForwardResult(False, f"Messenger sticker send failed: {exc}")
 
         if not isinstance(result, dict) or result.get("error"):
             payload = result.get("payload") if isinstance(result, dict) else result
+            logger.error(
+                "Telegram -> Messenger sticker returned error: topic_id=%s tg_message_id=%s transport=%s messenger_id=%s payload=%s",
+                entry.topic_id,
+                message.message_id,
+                entry.transport,
+                entry.messenger_id,
+                payload,
+            )
             return ForwardResult(False, f"Messenger sticker send failed: {payload}")
 
         payload = result.get("payload") or {}
         messenger_message_id = str(payload.get("messageID") or "")
+        logger.info(
+            "Telegram -> Messenger sticker sent: topic_id=%s tg_message_id=%s messenger_message_id=%s transport=%s messenger_id=%s",
+            entry.topic_id,
+            message.message_id,
+            messenger_message_id or "-",
+            entry.transport,
+            entry.messenger_id,
+        )
         if messenger_message_id:
             self.store.save_message(
                 message.message_id,
@@ -649,6 +847,15 @@ class MessengerTelegramBridge:
         removed = self.store.remove_topic(topic_id)
         if removed is None:
             return "This topic is not linked to a Messenger conversation."
+        logger.info(
+            "Topic mapping deleted: topic_id=%s transport=%s messenger_id=%s thread_id=%s chat_jid=%s name=%s",
+            removed.topic_id,
+            removed.transport,
+            removed.messenger_id,
+            removed.thread_id or "-",
+            removed.chat_jid or "-",
+            removed.name or "-",
+        )
         return f"Deleted mapping for <b>{escape_html(removed.name)}</b>."
 
     @staticmethod
@@ -665,6 +872,7 @@ class MessengerTelegramBridge:
         if self.bot is None:
             return
         try:
+            logger.info("Telegram notify general: %s", _preview(text))
             await self._telegram_call(
                 self.bot.send_message,
                 chat_id=self.config.telegram_group_id,
@@ -672,27 +880,29 @@ class MessengerTelegramBridge:
                 parse_mode=ParseMode.HTML,
             )
         except TelegramError as exc:
-            print(f"[Telegram] Notification failed: {exc}")
+            logger.warning("Telegram notification failed: %s", exc)
 
     @staticmethod
     async def _telegram_call(fn, *args, **kwargs):
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
+                logger.debug("Telegram API call: fn=%s attempt=%s", getattr(fn, "__name__", fn), attempt + 1)
                 return await fn(*args, **kwargs)
             except RetryAfter as exc:
                 if attempt == max_attempts - 1:
                     raise
+                logger.warning("Telegram RetryAfter calling %s: retry_after=%s", getattr(fn, "__name__", fn), exc.retry_after)
                 await asyncio.sleep(float(exc.retry_after) + 1.0)
             except TimedOut as exc:
                 if attempt == max_attempts - 1:
                     raise
                 delay = 2.0 + attempt
-                print(f"[Telegram] Timed out calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")
+                logger.warning("Telegram timed out calling %s: %s. Retrying in %.1fs", getattr(fn, "__name__", fn), exc, delay)
                 await asyncio.sleep(delay)
             except NetworkError as exc:
                 if attempt == max_attempts - 1:
                     raise
                 delay = min(10.0, 2.0 + (attempt * 2.0))
-                print(f"[Telegram] Network error calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")
+                logger.warning("Telegram network error calling %s: %s. Retrying in %.1fs", getattr(fn, "__name__", fn), exc, delay)
                 await asyncio.sleep(delay)

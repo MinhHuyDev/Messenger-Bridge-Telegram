@@ -84,6 +84,7 @@ FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 
 | Biến | Bắt buộc | Mô tả |
 |---|---:|---|
+| `LOG_LEVEL` | Không | Mức log in ra terminal. Dùng `DEBUG` để hiện chi tiết nhất, `INFO` để gọn hơn. Mặc định `DEBUG`. |
 | `TG_TOKEN` | Có | Token bot Telegram lấy từ BotFather. |
 | `TG_GROUP_ID` | Có | ID Telegram supergroup, thường có dạng `-100...`. |
 | `FACEBOOK_COOKIE` | Có* | Cookie Facebook của tài khoản Messenger. |
@@ -263,6 +264,20 @@ Cập nhật source mới và restart bot. Bridge hiện dùng `FBCHAT_E2EE_SEND
 ### Telegram báo timeout liên tục khi `send_message`
 
 Giữ `FORWARD_TYPING_ACTIVITY=0` và `FORWARD_READ_RECEIPTS=0` để tránh spam activity. Nếu mạng Telegram chậm, tăng `TG_READ_TIMEOUT`, `TG_WRITE_TIMEOUT` và `TG_POOL_TIMEOUT` trong `.env`.
+
+### Muốn xem đầy đủ log ở terminal
+
+Đặt trong `.env`:
+
+```env
+LOG_LEVEL=DEBUG
+```
+
+Sau đó restart bot. Terminal sẽ in các luồng chính như Messenger nhận tin, Telegram gửi sang Messenger, topic mapping, message ID, lỗi send và retry Telegram API. Nếu log quá nhiều, đổi thành:
+
+```env
+LOG_LEVEL=INFO
+```
 
 ### Telegram sticker gửi sang Messenger báo `unknown method`
 

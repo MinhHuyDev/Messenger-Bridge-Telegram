@@ -94,6 +94,7 @@ def _read_cookie() -> str:
 
 @dataclass(frozen=True)
 class AppConfig:
+    log_level: str
     telegram_token: str
     telegram_group_id: int
     facebook_cookie: str
@@ -125,6 +126,7 @@ def load_config() -> AppConfig:
     e2ee_bin = os.environ.get("FBCHAT_E2EE_BIN") or _default_e2ee_binary()
 
     return AppConfig(
+        log_level=os.environ.get("LOG_LEVEL", "DEBUG").strip().upper() or "DEBUG",
         telegram_token=_required("TG_TOKEN"),
         telegram_group_id=int(_required("TG_GROUP_ID")),
         facebook_cookie=_read_cookie(),
