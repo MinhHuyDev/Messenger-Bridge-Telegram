@@ -34,6 +34,8 @@ from utils.formatting import (
 logger = logging.getLogger(__name__)
 READ_RECEIPT_TTL_SECONDS = 5.0
 TYPING_TTL_SECONDS = 20.0
+ACTIVITY_DEDUPE_RETENTION_MS = 10 * 60 * 1000
+REACTION_STATE_RETENTION_MS = 6 * 60 * 60 * 1000
 PHOTO_CAPTION_LIMIT = 1024
 MEDIA_DOWNLOAD_TIMEOUT = (10, 45)
 MEDIA_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
@@ -66,6 +68,7 @@ class MessengerTelegramBridge:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._topic_locks: dict[str, asyncio.Lock] = {}
         self._activity_dedupe: dict[str, int] = {}
+        self._reaction_activity_state: dict[str, tuple[str, int]] = {}
         self._typing_messages: dict[str, tuple[int, int]] = {}
         self._ephemeral_delete_tasks: dict[str, asyncio.Task] = {}
 
@@ -477,6 +480,8 @@ class MessengerTelegramBridge:
         return None
 
     def _should_forward_activity(self, activity: IncomingMessengerActivity) -> bool:
+        if activity.kind == "reaction":
+            return self._should_forward_reaction_activity(activity)
         if activity.kind == "typing":
             if not self.config.forward_typing_activity:
                 return False
@@ -494,6 +499,27 @@ class MessengerTelegramBridge:
             )
         return True
 
+    def _should_forward_reaction_activity(self, activity: IncomingMessengerActivity) -> bool:
+        if not self.config.forward_messenger_reactions:
+            return False
+
+        now = int(time.time() * 1000)
+        actor = activity.actor_id or activity.actor_jid or "-"
+        target = activity.target_message_id or "-"
+        reaction = activity.reaction or "<remove>"
+        key = f"{activity.transport}:{activity.messenger_id}:{actor}:{target}"
+        previous = self._reaction_activity_state.get(key)
+        self._reaction_activity_state[key] = (reaction, now)
+        self._cleanup_reaction_activity_state(now)
+        if previous is not None and previous[0] == reaction:
+            return False
+        return True
+
+    def _cleanup_reaction_activity_state(self, now_ms: int) -> None:
+        for old_key, (_, seen_at) in list(self._reaction_activity_state.items()):
+            if now_ms - seen_at > REACTION_STATE_RETENTION_MS:
+                self._reaction_activity_state.pop(old_key, None)
+
     def _dedupe_activity(self, key: str, window_ms: int) -> bool:
         now = int(time.time() * 1000)
         last = self._activity_dedupe.get(key, 0)
@@ -501,7 +527,7 @@ class MessengerTelegramBridge:
             return False
         self._activity_dedupe[key] = now
         for old_key, seen_at in list(self._activity_dedupe.items()):
-            if now - seen_at > 60000:
+            if now - seen_at > ACTIVITY_DEDUPE_RETENTION_MS:
                 self._activity_dedupe.pop(old_key, None)
         return True
 

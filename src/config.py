@@ -113,6 +113,7 @@ class AppConfig:
     telegram_read_timeout: float
     telegram_write_timeout: float
     telegram_pool_timeout: float
+    forward_messenger_reactions: bool
     forward_typing_activity: bool
     forward_read_receipts: bool
 
@@ -145,6 +146,7 @@ def load_config() -> AppConfig:
         telegram_read_timeout=float(os.environ.get("TG_READ_TIMEOUT", "45")),
         telegram_write_timeout=float(os.environ.get("TG_WRITE_TIMEOUT", "45")),
         telegram_pool_timeout=float(os.environ.get("TG_POOL_TIMEOUT", "30")),
+        forward_messenger_reactions=_env_bool("FORWARD_MESSENGER_REACTIONS", True),
         forward_typing_activity=_env_bool("FORWARD_TYPING_ACTIVITY", False),
         forward_read_receipts=_env_bool("FORWARD_READ_RECEIPTS", False),
     )

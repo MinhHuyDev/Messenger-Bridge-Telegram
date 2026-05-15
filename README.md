@@ -105,6 +105,7 @@ FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 | `TG_READ_TIMEOUT` | Không | Timeout đọc response Telegram Bot API, mặc định `45`. |
 | `TG_WRITE_TIMEOUT` | Không | Timeout gửi request Telegram Bot API, mặc định `45`. |
 | `TG_POOL_TIMEOUT` | Không | Timeout chờ connection pool Telegram, mặc định `30`. |
+| `FORWARD_MESSENGER_REACTIONS` | Không | Forward reaction Messenger thành activity trong Telegram. Mặc định `1`; reaction giống hệt nhau sẽ được dedupe để tránh spam. |
 | `FORWARD_TYPING_ACTIVITY` | Không | Forward typing indicator sang Telegram. Mặc định `0` để tránh spam. |
 | `FORWARD_READ_RECEIPTS` | Không | Forward read receipt sang Telegram. Mặc định `0` để tránh spam. |
 
