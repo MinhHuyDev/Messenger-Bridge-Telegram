@@ -74,7 +74,7 @@ Facebook Messenger
 Trong PowerShell:
 
 ```powershell
-cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
+cd ...
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -102,7 +102,7 @@ Bridge dùng `fbchat-v2` được cài trực tiếp từ GitHub repo vào Pytho
 Cách này cài `fbchat-v2` vào Python environment bằng link repository. Phù hợp khi muốn dùng source mới nhất từ GitHub mà không cần giữ folder source local cạnh project.
 
 ```powershell
-cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
+cd ...
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade "git+https://github.com/MinhHuyDev/fbchat-v2.git"
 ```
@@ -278,7 +278,7 @@ Nếu nhận `unknown method`, binary quá cũ hoặc build sai source. Nếu b�
 ## Chạy bridge
 
 ```powershell
-cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
+cd ...
 .\.venv\Scripts\Activate.ps1
 python .\src\main.py
 ```
@@ -462,7 +462,7 @@ LOG_LEVEL=INFO
 Compile Python:
 
 ```powershell
-cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
+cd ...
 python -m compileall src
 ```
 
