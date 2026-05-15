@@ -1,0 +1,7 @@
+fbchat-v2>=2.0.0
+python-telegram-bot>=21.7
+python-dotenv>=1.0.1
+requests>=2.31.0
+paho-mqtt>=1.6.1
+attrs>=23.2.0
+pyotp>=2.9.0

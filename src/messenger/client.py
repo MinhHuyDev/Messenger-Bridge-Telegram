@@ -1,0 +1,404 @@
+from __future__ import annotations
+
+import base64
+import sys
+import json
+import threading
+import traceback
+from importlib import import_module
+from typing import Callable, Optional
+
+from config import AppConfig
+from models import IncomingMessengerMessage, QuoteData, TopicEntry
+
+
+MessengerEventCallback = Callable[[dict], None]
+
+
+class MessengerClient:
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        self.data_fb: Optional[dict] = None
+        self.self_id = ""
+        self.listener = None
+        self.e2ee_sender = None
+        self._thread: Optional[threading.Thread] = None
+        self._last_error: Optional[BaseException] = None
+        self._event_callback: Optional[MessengerEventCallback] = None
+        self._user_name_cache: dict[str, str] = {}
+        self._thread_name_cache: dict[str, str] = {}
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        return self._last_error
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _prepare_fbchat_import(self) -> None:
+        if self.config.fbchat_v2_src_path is None:
+            return
+        if not self.config.fbchat_v2_src_path.exists():
+            raise RuntimeError(f"FBCHAT_V2_SRC_PATH does not exist: {self.config.fbchat_v2_src_path}")
+        core_file = self.config.fbchat_v2_src_path / "_core" / "_session.py"
+        e2ee_file = self.config.fbchat_v2_src_path / "_messaging" / "_listening_e2ee.py"
+        if not core_file.exists() or not e2ee_file.exists():
+            raise RuntimeError(
+                "FBCHAT_V2_SRC_PATH must point to the fbchat-v2/src folder "
+                f"that contains _core and _messaging, got: {self.config.fbchat_v2_src_path}"
+            )
+        path = str(self.config.fbchat_v2_src_path)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    def login(self) -> None:
+        self._prepare_fbchat_import()
+
+        try:
+            data_get_home = import_module("_core._session").dataGetHome
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Could not import fbchat-v2 internal modules. Set FBCHAT_V2_SRC_PATH "
+                "to the fbchat-v2/src folder, for example: FBCHAT_V2_SRC_PATH=../fbchat-v2/src"
+            ) from exc
+
+        data_fb = data_get_home(self.config.facebook_cookie)
+        facebook_id = str(data_fb.get("FacebookID") or "")
+        if not facebook_id or "Unable to retrieve" in facebook_id:
+            raise RuntimeError("Could not read FacebookID from cookie. Refresh FACEBOOK_COOKIE.")
+
+        self.data_fb = data_fb
+        self.self_id = facebook_id
+
+    def start(self, event_callback: MessengerEventCallback) -> None:
+        if self.data_fb is None:
+            self.login()
+
+        listening_e2ee_event = import_module("_messaging._listening_e2ee").listeningE2EEEvent
+        e2ee_sender = import_module("_messaging._send_e2ee").api
+
+        self._event_callback = event_callback
+        self.listener = listening_e2ee_event(
+            self.data_fb,
+            log_level=self.config.fbchat_e2ee_log_level,
+            device_path=self.config.fbchat_e2ee_device_path,
+            e2ee_memory_only=self.config.fbchat_e2ee_memory_only,
+            enable_e2ee=self.config.fbchat_enable_e2ee,
+            binary_path=self.config.fbchat_e2ee_bin,
+        )
+        self.listener.on_message(event_callback)
+        self.e2ee_sender = e2ee_sender(listener=self.listener)
+
+        self._thread = threading.Thread(
+            target=self._run_listener,
+            name="messenger-e2ee-listener",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run_listener(self) -> None:
+        try:
+            self.listener.connect_mqtt()
+        except BaseException as exc:  # noqa: BLE001 - surface listener thread failures
+            self._last_error = exc
+            traceback.print_exc()
+            if self._event_callback:
+                self._event_callback({
+                    "type": "error",
+                    "data": {"message": str(exc), "source": "listener"},
+                })
+
+    def stop(self) -> None:
+        if self.listener is not None:
+            try:
+                self.listener.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def resolve_user_name(self, user_id: str) -> Optional[str]:
+        clean_id = str(user_id or "").strip()
+        if not clean_id or self.data_fb is None:
+            return None
+        if clean_id in self._user_name_cache:
+            return self._user_name_cache[clean_id]
+
+        info = self._request_user_info(clean_id)
+        if info is None:
+            return None
+        name = str(info.get("nameUser") or info.get("firstName") or "").strip()
+        if name:
+            self._user_name_cache[clean_id] = name
+            return name
+        return None
+
+    def _request_user_info(self, user_id: str) -> Optional[dict]:
+        if self.data_fb is None:
+            return None
+
+        try:
+            requests = import_module("requests")
+            utils = import_module("_core._utils")
+            data_form = utils.formAll(self.data_fb, requireGraphql=False)
+            data_form["ids[0]"] = user_id
+
+            response = requests.post(
+                "https://www.facebook.com/chat/user_info/",
+                headers=utils.Headers(data_form),
+                timeout=5,
+                data=data_form,
+                cookies=utils.parse_cookie_string(self.data_fb["cookieFacebook"]),
+                verify=True,
+            )
+            raw = response.text.split("for (;;);", 1)[-1]
+            profile = json.loads(raw)["payload"]["profiles"][str(user_id)]
+            return {
+                "idUser": profile.get("id"),
+                "nameUser": profile.get("name"),
+                "firstName": profile.get("firstName"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Messenger] Could not resolve user name for {user_id}: {exc}")
+            return None
+
+    def resolve_thread_name(self, thread_id: str) -> Optional[str]:
+        clean_id = str(thread_id or "").strip()
+        if not clean_id or self.data_fb is None:
+            return None
+        if clean_id in self._thread_name_cache:
+            return self._thread_name_cache[clean_id]
+
+        try:
+            thread_data_mod = import_module("_features._thread._all_thread_data")
+            fbt = getattr(self.listener, "fbt", None) or thread_data_mod.func(self.data_fb)
+            all_threads = (fbt.get("dataAllThread") or {}) if isinstance(fbt, dict) else {}
+            ids = [str(item) for item in (all_threads.get("threadIDList") or [])]
+            names = [str(item).strip() for item in (all_threads.get("threadNameList") or [])]
+            for index, candidate_id in enumerate(ids):
+                if candidate_id == clean_id and index < len(names) and names[index]:
+                    self._thread_name_cache[clean_id] = names[index]
+                    return names[index]
+
+            data_get = fbt.get("dataGet") if isinstance(fbt, dict) else None
+            if data_get:
+                snapshot_name = self._resolve_name_from_thread_snapshot(data_get, clean_id)
+                if snapshot_name:
+                    self._thread_name_cache[clean_id] = snapshot_name
+                    return snapshot_name
+
+                info = thread_data_mod.features(data_get, clean_id, "threadInfomation")
+                if isinstance(info, dict):
+                    name = str(info.get("nameThread") or "").strip()
+                    if name:
+                        self._thread_name_cache[clean_id] = name
+                        return name
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Messenger] Could not resolve thread name for {clean_id}: {exc}")
+        return None
+
+    def _resolve_name_from_thread_snapshot(self, data_get: str, lookup_id: str) -> Optional[str]:
+        try:
+            nodes = json.loads(data_get)["o0"]["data"]["viewer"]["message_threads"]["nodes"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return None
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            thread_key = node.get("thread_key") or {}
+            key_values = {
+                str(thread_key.get("thread_fbid") or ""),
+                str(thread_key.get("other_user_id") or ""),
+                str(thread_key.get("other_user_fbid") or ""),
+                str(node.get("id") or ""),
+            }
+            if lookup_id not in key_values:
+                continue
+
+            thread_name = str(node.get("name") or "").strip()
+            if thread_name:
+                return thread_name
+
+            participant_name = self._participant_name_from_thread_node(node)
+            if participant_name:
+                return participant_name
+        return None
+
+    def _participant_name_from_thread_node(self, node: dict) -> Optional[str]:
+        edges = (((node.get("all_participants") or {}).get("edges")) or [])
+        fallback_name = None
+        for edge in edges:
+            actor = ((edge or {}).get("node") or {}).get("messaging_actor") or {}
+            actor_id = str(actor.get("id") or "").strip()
+            actor_name = str(actor.get("name") or "").strip()
+            if not actor_name:
+                continue
+            if not fallback_name:
+                fallback_name = actor_name
+            if actor_id and actor_id != self.self_id:
+                return actor_name
+        return fallback_name
+
+    def resolve_topic_display_name(self, message: IncomingMessengerMessage) -> Optional[str]:
+        thread_name = self.resolve_thread_name(message.thread_id)
+        if thread_name:
+            return thread_name
+
+        for candidate_id in self._candidate_profile_ids(message):
+            user_name = self.resolve_user_name(candidate_id)
+            if user_name:
+                return user_name
+        return None
+
+    def _candidate_profile_ids(self, message: IncomingMessengerMessage) -> list[str]:
+        candidates = [
+            message.sender_id,
+            message.thread_id,
+            self._jid_user(message.sender_jid),
+            self._jid_user(message.chat_jid),
+            self._jid_user(message.messenger_id),
+            message.messenger_id,
+        ]
+
+        seen: set[str] = set()
+        result: list[str] = []
+        for candidate in candidates:
+            clean = str(candidate or "").strip()
+            if not clean or clean == self.self_id or clean in seen:
+                continue
+            if not clean.isdigit():
+                continue
+            seen.add(clean)
+            result.append(clean)
+        return result
+
+    @staticmethod
+    def _jid_user(value: Optional[str]) -> str:
+        text = str(value or "").strip()
+        if "@" not in text:
+            return text
+        return text.split("@", 1)[0]
+
+    def send_text(self, entry: TopicEntry, text: str, quote: Optional[QuoteData] = None) -> dict:
+        if self.listener is None:
+            raise RuntimeError("Messenger listener is not connected")
+
+        content = text.strip()
+        if not content:
+            raise ValueError("Cannot send an empty Messenger message")
+
+        if entry.transport == "e2ee":
+            if self.e2ee_sender is None:
+                raise RuntimeError("E2EE sender is not ready")
+            reply_id = quote.message_id if quote and quote.transport == "e2ee" else ""
+            reply_sender = quote.sender_jid if quote and quote.transport == "e2ee" else ""
+            return self.e2ee_sender.send(
+                chat_jid=entry.chat_jid or entry.messenger_id,
+                contentSend=content,
+                replyMessage=reply_id,
+                replySenderJid=reply_sender,
+            )
+
+        reply_id = quote.message_id if quote and quote.transport == "regular" else ""
+        data = self.listener.send_message(
+            int(entry.thread_id or entry.messenger_id),
+            content,
+            reply_to_id=reply_id,
+        )
+        return {
+            "success": 1,
+            "payload": {
+                "messageID": data.get("messageId") or data.get("id"),
+                "timestamp": data.get("timestampMs") or data.get("timestamp") or 0,
+            },
+        }
+
+    def send_telegram_sticker(
+        self,
+        entry: TopicEntry,
+        file_data: bytes,
+        filename: str,
+        mime_type: str,
+        width: int = 0,
+        height: int = 0,
+        quote: Optional[QuoteData] = None,
+    ) -> dict:
+        if self.listener is None:
+            raise RuntimeError("Messenger listener is not connected")
+        if not file_data:
+            raise ValueError("Telegram sticker file is empty")
+
+        encoded = base64.b64encode(file_data).decode("ascii")
+        clean_mime = (mime_type or "application/octet-stream").lower()
+        clean_filename = filename or "telegram-sticker.bin"
+
+        if entry.transport == "e2ee":
+            reply_id = quote.message_id if quote and quote.transport == "e2ee" else ""
+            reply_sender = quote.sender_jid if quote and quote.transport == "e2ee" else ""
+            chat_jid = entry.chat_jid or entry.messenger_id
+            if clean_mime == "image/webp" or clean_filename.lower().endswith(".webp"):
+                return self._call_bridge_send("sendE2EESticker", {
+                    "chatJid": chat_jid,
+                    "data": encoded,
+                    "mimeType": clean_mime or "image/webp",
+                    "width": width,
+                    "height": height,
+                    "replyToId": reply_id,
+                    "replyToSenderJid": reply_sender,
+                })
+            if clean_mime.startswith("video/"):
+                return self._call_bridge_send("sendE2EEVideo", {
+                    "chatJid": chat_jid,
+                    "data": encoded,
+                    "mimeType": clean_mime,
+                    "caption": "",
+                    "width": width,
+                    "height": height,
+                    "replyToId": reply_id,
+                    "replyToSenderJid": reply_sender,
+                })
+            return self._call_bridge_send("sendE2EEDocument", {
+                "chatJid": chat_jid,
+                "data": encoded,
+                "filename": clean_filename,
+                "mimeType": clean_mime,
+                "replyToId": reply_id,
+                "replyToSenderJid": reply_sender,
+            })
+
+        thread_id = int(entry.thread_id or entry.messenger_id)
+        reply_id = quote.message_id if quote and quote.transport == "regular" else ""
+        if clean_mime.startswith("image/"):
+            return self._call_bridge_send("sendImage", {
+                "threadId": thread_id,
+                "data": encoded,
+                "filename": clean_filename,
+                "caption": "",
+                "replyToId": reply_id,
+            })
+        return self._call_bridge_send("sendFile", {
+            "threadId": thread_id,
+            "data": encoded,
+            "filename": clean_filename,
+            "mimeType": clean_mime,
+            "caption": "Telegram sticker",
+            "replyToId": reply_id,
+        })
+
+    def _call_bridge_send(self, method: str, params: dict) -> dict:
+        bridge = getattr(self.listener, "_bridge", None)
+        if bridge is None:
+            raise RuntimeError("Messenger bridge RPC is not connected")
+        data = bridge.call(method, params)
+        return self._normalize_send_result(data)
+
+    @staticmethod
+    def _normalize_send_result(data: dict) -> dict:
+        payload = data or {}
+        return {
+            "success": 1,
+            "payload": {
+                "messageID": payload.get("messageId") or payload.get("messageID") or payload.get("id"),
+                "timestamp": payload.get("timestampMs") or payload.get("timestamp") or 0,
+            },
+        }
