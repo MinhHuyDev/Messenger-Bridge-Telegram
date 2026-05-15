@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import sys
 import json
 import logging
@@ -350,12 +351,11 @@ class MessengerClient:
                 self.config.fbchat_e2ee_send_timeout,
                 len(content),
             )
-            return self.e2ee_sender.send(
+            return self._send_e2ee_text(
                 chat_jid=entry.chat_jid or entry.messenger_id,
-                contentSend=content,
-                replyMessage=reply_id,
-                replySenderJid=reply_sender,
-                timeout=self.config.fbchat_e2ee_send_timeout,
+                content=content,
+                reply_id=reply_id,
+                reply_sender=reply_sender,
             )
 
         reply_id = quote.message_id if quote and quote.transport == "regular" else ""
@@ -377,6 +377,36 @@ class MessengerClient:
                 "timestamp": data.get("timestampMs") or data.get("timestamp") or 0,
             },
         }
+
+    def _send_e2ee_text(self, chat_jid: str, content: str, reply_id: str = "", reply_sender: str = "") -> dict:
+        if self.e2ee_sender is None:
+            raise RuntimeError("E2EE sender is not ready")
+
+        kwargs = {
+            "chat_jid": chat_jid,
+            "contentSend": content,
+            "replyMessage": reply_id,
+            "replySenderJid": reply_sender,
+        }
+        timeout = self.config.fbchat_e2ee_send_timeout
+        try:
+            parameters = inspect.signature(self.e2ee_sender.send).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+
+        if "timeout" in parameters:
+            kwargs["timeout"] = timeout
+        else:
+            logger.debug("fbchat-v2 E2EE send() has no timeout parameter; calling without timeout")
+
+        try:
+            return self.e2ee_sender.send(**kwargs)
+        except TypeError as exc:
+            if "timeout" not in kwargs or "unexpected keyword argument 'timeout'" not in str(exc):
+                raise
+            kwargs.pop("timeout", None)
+            logger.warning("fbchat-v2 E2EE send() rejected timeout; retrying without timeout")
+            return self.e2ee_sender.send(**kwargs)
 
     def send_telegram_sticker(
         self,
