@@ -7,7 +7,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Optional
 
-from telegram import Bot, Message, ReplyParameters
+from telegram import Bot, Message, MessageReactionUpdated, ReplyParameters
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application
@@ -660,6 +660,102 @@ class MessengerTelegramBridge:
             )
 
         return ForwardResult(True)
+
+    async def forward_telegram_reaction(self, reaction: MessageReactionUpdated) -> ForwardResult:
+        chat = getattr(reaction, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat_id != self.config.telegram_group_id:
+            logger.debug(
+                "Ignored Telegram reaction from another chat: chat_id=%s message_id=%s",
+                chat_id,
+                reaction.message_id,
+            )
+            return ForwardResult(False)
+
+        user = getattr(reaction, "user", None)
+        if user is not None and getattr(user, "is_bot", False):
+            logger.debug(
+                "Ignored Telegram bot reaction: user_id=%s message_id=%s",
+                getattr(user, "id", "-"),
+                reaction.message_id,
+            )
+            return ForwardResult(False)
+
+        quote = self.store.get_quote_by_tg(reaction.message_id)
+        if quote is None:
+            logger.debug("Telegram reaction ignored: tg_message_id=%s has no Messenger quote mapping", reaction.message_id)
+            return ForwardResult(False)
+
+        old_emoji = self._telegram_reaction_emoji(reaction.old_reaction)
+        new_emoji = self._telegram_reaction_emoji(reaction.new_reaction)
+        if old_emoji == new_emoji:
+            logger.debug("Telegram reaction ignored: unchanged tg_message_id=%s emoji=%s", reaction.message_id, new_emoji or "<none>")
+            return ForwardResult(False)
+
+        actor_name = "-"
+        if user is not None:
+            actor_name = getattr(user, "full_name", "") or str(getattr(user, "id", "-"))
+        actor_chat = getattr(reaction, "actor_chat", None)
+        if actor_chat is not None:
+            actor_name = getattr(actor_chat, "title", "") or str(getattr(actor_chat, "id", "-"))
+
+        logger.info(
+            "Telegram -> Messenger reaction received: tg_message_id=%s actor=%s old=%s new=%s transport=%s messenger_id=%s messenger_message_id=%s",
+            reaction.message_id,
+            actor_name,
+            old_emoji or "<none>",
+            new_emoji or "<remove>",
+            quote.transport,
+            quote.messenger_id,
+            quote.message_id,
+        )
+        try:
+            result = await asyncio.to_thread(self.messenger.send_reaction, quote, new_emoji)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Telegram -> Messenger reaction failed: tg_message_id=%s transport=%s messenger_id=%s messenger_message_id=%s",
+                reaction.message_id,
+                quote.transport,
+                quote.messenger_id,
+                quote.message_id,
+            )
+            return ForwardResult(False, f"Messenger reaction failed: {exc}")
+
+        if not isinstance(result, dict) or result.get("error"):
+            payload = result.get("payload") if isinstance(result, dict) else result
+            logger.error(
+                "Telegram -> Messenger reaction returned error: tg_message_id=%s transport=%s messenger_id=%s payload=%s",
+                reaction.message_id,
+                quote.transport,
+                quote.messenger_id,
+                payload,
+            )
+            return ForwardResult(False, f"Messenger reaction failed: {payload}")
+
+        logger.info(
+            "Telegram -> Messenger reaction sent: tg_message_id=%s messenger_message_id=%s emoji=%s",
+            reaction.message_id,
+            quote.message_id,
+            new_emoji or "<remove>",
+        )
+        return ForwardResult(True)
+
+    @staticmethod
+    def _telegram_reaction_emoji(reactions: object) -> str:
+        if not reactions:
+            return ""
+        if isinstance(reactions, list):
+            reaction_items = reactions
+        else:
+            try:
+                reaction_items = list(reactions)
+            except TypeError:
+                reaction_items = [reactions]
+        for reaction in reversed(reaction_items):
+            emoji = str(getattr(reaction, "emoji", "") or "").strip()
+            if emoji:
+                return emoji
+        return ""
 
     async def _forward_telegram_sticker(
         self,

@@ -422,6 +422,47 @@ class MessengerClient:
             "replyToId": reply_id,
         })
 
+    def send_reaction(self, quote: QuoteData, emoji: str) -> dict:
+        if self.listener is None:
+            raise RuntimeError("Messenger listener is not connected")
+        if not quote.message_id:
+            raise ValueError("Cannot react without a Messenger message ID")
+
+        clean_emoji = str(emoji or "")
+        if quote.transport == "e2ee":
+            message_id, sender_jid = self._e2ee_reply_parts(quote)
+            if not message_id or not sender_jid:
+                raise RuntimeError("Cannot send E2EE reaction without quote sender JID")
+            chat_jid = quote.chat_jid or quote.messenger_id
+            if not chat_jid:
+                raise RuntimeError("Cannot send E2EE reaction without chat JID")
+            logger.info(
+                "Sending E2EE Messenger reaction: chat_jid=%s message_id=%s sender_jid=%s emoji=%s",
+                chat_jid,
+                message_id,
+                sender_jid,
+                clean_emoji or "<remove>",
+            )
+            return self._call_bridge_send("sendE2EEReaction", {
+                "chatJid": chat_jid,
+                "messageId": message_id,
+                "senderJid": sender_jid,
+                "emoji": clean_emoji,
+            })
+
+        thread_id = int(quote.thread_id or quote.messenger_id)
+        logger.info(
+            "Sending regular Messenger reaction: thread_id=%s message_id=%s emoji=%s",
+            thread_id,
+            quote.message_id,
+            clean_emoji or "<remove>",
+        )
+        return self._call_bridge_send("sendReaction", {
+            "threadId": thread_id,
+            "messageId": quote.message_id,
+            "emoji": clean_emoji,
+        })
+
     def _call_bridge_send(self, method: str, params: dict) -> dict:
         bridge = getattr(self.listener, "_bridge", None)
         if bridge is None:

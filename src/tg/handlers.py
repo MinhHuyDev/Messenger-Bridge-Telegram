@@ -4,7 +4,7 @@ import logging
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, MessageReactionHandler, filters
 
 from bridge import MessengerTelegramBridge
 from config import AppConfig
@@ -25,6 +25,7 @@ class TelegramHandlers:
         application.add_handler(CommandHandler("status", self.status_command))
         application.add_handler(CommandHandler("checktopics", self.check_topics_command))
         application.add_handler(CommandHandler("topic", self.topic_command))
+        application.add_handler(MessageReactionHandler(self.reaction_handler))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.message_handler))
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -39,7 +40,8 @@ class TelegramHandlers:
             "/topic list - list mapped topics\n"
             "/topic info - show current topic mapping\n"
             "/topic delete - delete current topic mapping\n\n"
-            "Send messages or Telegram stickers inside a mapped forum topic to forward them to Messenger.",
+            "Send messages or Telegram stickers inside a mapped forum topic to forward them to Messenger. "
+            "React to bridged Telegram messages to update the reaction on Messenger.",
         )
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,3 +117,18 @@ class TelegramHandlers:
         if not result.ok and result.message:
             logger.info("Telegram message replied with bridge error: message_id=%s error=%s", message.message_id, result.message)
             await message.reply_text(result.message)
+
+    async def reaction_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        reaction = update.message_reaction
+        if reaction is None:
+            return
+        logger.debug(
+            "Telegram reaction update received: chat_id=%s message_id=%s old=%s new=%s",
+            getattr(getattr(reaction, "chat", None), "id", "-"),
+            reaction.message_id,
+            reaction.old_reaction,
+            reaction.new_reaction,
+        )
+        result = await self.bridge.forward_telegram_reaction(reaction)
+        if not result.ok and result.message:
+            logger.info("Telegram reaction bridge error: message_id=%s error=%s", reaction.message_id, result.message)

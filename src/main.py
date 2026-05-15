@@ -45,7 +45,7 @@ def main() -> None:
 	print("| fbchat-v2 E2EE listener/send enabled   |")
 	print("+----------------------------------------+")
 	logger.info("Starting bridge with LOG_LEVEL=%s data_dir=%s topics=%s", config.log_level, config.data_dir, len(store.all_topics()))
-	application.run_polling(allowed_updates=["message"], close_loop=False)
+	application.run_polling(allowed_updates=["message", "message_reaction"], close_loop=False)
 
 
 if __name__ == "__main__":
