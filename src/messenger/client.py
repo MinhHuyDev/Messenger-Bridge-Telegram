@@ -284,13 +284,13 @@ class MessengerClient:
         if entry.transport == "e2ee":
             if self.e2ee_sender is None:
                 raise RuntimeError("E2EE sender is not ready")
-            reply_id = quote.message_id if quote and quote.transport == "e2ee" else ""
-            reply_sender = quote.sender_jid if quote and quote.transport == "e2ee" else ""
+            reply_id, reply_sender = self._e2ee_reply_parts(quote)
             return self.e2ee_sender.send(
                 chat_jid=entry.chat_jid or entry.messenger_id,
                 contentSend=content,
                 replyMessage=reply_id,
                 replySenderJid=reply_sender,
+                timeout=self.config.fbchat_e2ee_send_timeout,
             )
 
         reply_id = quote.message_id if quote and quote.transport == "regular" else ""
@@ -327,8 +327,7 @@ class MessengerClient:
         clean_filename = filename or "telegram-sticker.bin"
 
         if entry.transport == "e2ee":
-            reply_id = quote.message_id if quote and quote.transport == "e2ee" else ""
-            reply_sender = quote.sender_jid if quote and quote.transport == "e2ee" else ""
+            reply_id, reply_sender = self._e2ee_reply_parts(quote)
             chat_jid = entry.chat_jid or entry.messenger_id
             if clean_mime == "image/webp" or clean_filename.lower().endswith(".webp"):
                 return self._call_bridge_send("sendE2EESticker", {
@@ -383,8 +382,27 @@ class MessengerClient:
         bridge = getattr(self.listener, "_bridge", None)
         if bridge is None:
             raise RuntimeError("Messenger bridge RPC is not connected")
-        data = bridge.call(method, params)
+        timeout = self.config.fbchat_e2ee_send_timeout if method.startswith("sendE2EE") else 60.0
+        data = bridge.call(method, params, timeout=timeout)
         return self._normalize_send_result(data)
+
+    def _e2ee_reply_parts(self, quote: Optional[QuoteData]) -> tuple[str, str]:
+        if quote is None or quote.transport != "e2ee" or not quote.message_id:
+            return "", ""
+
+        sender_jid = (quote.sender_jid or "").strip()
+        if not sender_jid and quote.sender_id == self.self_id:
+            sender_jid = self._self_e2ee_jid()
+        if not sender_jid:
+            print(f"[Messenger] E2EE reply metadata skipped for {quote.message_id}: missing sender JID")
+            return "", ""
+        return quote.message_id, sender_jid
+
+    def _self_e2ee_jid(self) -> str:
+        return f"{self.self_id}@s.whatsapp.net" if self.self_id else ""
+
+    def self_sender_jid(self, transport: str) -> str:
+        return self._self_e2ee_jid() if transport == "e2ee" else ""
 
     @staticmethod
     def _normalize_send_result(data: dict) -> dict:

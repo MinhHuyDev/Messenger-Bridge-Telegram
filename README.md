@@ -1,22 +1,23 @@
 # Messenger Bridge Telegram
 
-Messenger Bridge Telegram la bridge hai chieu giua Facebook Messenger va Telegram Forum Topics. Du an duoc viet bang Python, su dung `fbchat-v2` de listen/send Messenger, bao gom ca E2EE, va su dung `python-telegram-bot` de van hanh bot Telegram.
+Messenger Bridge Telegram là công cụ bridge hai chiều giữa Facebook Messenger và Telegram Forum Topics. Dự án được viết bằng Python, sử dụng `fbchat-v2` để lắng nghe/gửi tin nhắn Messenger, bao gồm E2EE, và sử dụng `python-telegram-bot` để vận hành bot Telegram.
 
-Moi hoi thoai Messenger duoc gan voi mot topic rieng trong Telegram supergroup. Tin nhan, reply, reaction va cac activity realtime se duoc dua vao dung topic, giup theo doi nhieu nhom/nguoi dung 1-1 trong cung mot group Telegram.
+Mỗi hội thoại Messenger, gồm nhóm và chat 1-1, được ánh xạ vào một topic riêng trong Telegram supergroup. Tin nhắn, reply, reaction và các hoạt động realtime quan trọng sẽ được đưa vào đúng topic để có thể theo dõi tập trung trong một group Telegram.
 
-## Diem chinh
+## Tính năng chính
 
-- Bridge hai chieu Messenger <-> Telegram.
-- Tu dong tao Telegram forum topic cho hoi thoai Messenger moi.
-- Ho tro regular Messenger va E2EE Messenger thong qua `fbchat-v2`.
-- Forward tin nhan Messenger sang Telegram, giu mapping reply khi co message ID.
-- Forward tin nhan Telegram trong topic nguoc ve Messenger.
-- Hien realtime activity Messenger: reaction, go reaction, edit message, unsend, typing, read receipt va E2EE receipt.
-- Gui Telegram sticker sang Messenger theo kha nang transport: static sticker nhu sticker/image, video/animated sticker nhu video/file best-effort.
-- Luu mapping topic/message trong `data/bridge-store.json` de reply va activity co the bam dung tin goc.
-- Tu recover khi Telegram topic bi xoa/dong va mapping bi stale.
+- Bridge hai chiều Messenger <-> Telegram.
+- Tự động tạo Telegram forum topic cho hội thoại Messenger mới.
+- Hỗ trợ Messenger thường và Messenger E2EE thông qua `fbchat-v2`.
+- Chuyển tin nhắn Messenger sang Telegram, kèm mapping để reply đúng tin nhắn gốc khi có message ID.
+- Chuyển tin nhắn Telegram trong topic đã ánh xạ ngược về Messenger.
+- Hiển thị activity realtime của Messenger: reaction, gỡ reaction, edit message, unsend, typing, read receipt và E2EE receipt.
+- Mặc định tắt typing/read receipt để tránh spam Telegram; có thể bật lại bằng biến môi trường.
+- Gửi Telegram sticker sang Messenger theo khả năng transport: static sticker gửi như sticker/image, video/animated sticker gửi best-effort như video/file.
+- Lưu mapping topic/message trong `data/bridge-store.json` để reply, reaction, edit và unsend có thể bám đúng tin gốc.
+- Tự phục hồi khi Telegram topic bị xoá/đóng hoặc mapping topic bị stale.
 
-## Kien truc
+## Kiến trúc
 
 ```text
 Facebook Messenger
@@ -27,31 +28,31 @@ Facebook Messenger
   -> Telegram supergroup forum topics
 ```
 
-Thanh phan chinh:
+Các thành phần chính:
 
-| File | Vai tro |
+| File | Vai trò |
 |---|---|
-| `src/main.py` | Entry point, load config va chay Telegram polling. |
-| `src/config.py` | Doc `.env`, auto-detect `fbchat-v2/src` va E2EE binary local. |
-| `src/messenger/client.py` | Dang nhap Messenger, listen E2EE/regular, gui text/sticker/media best-effort. |
-| `src/messenger/events.py` | Chuan hoa raw event Messenger thanh message/activity model. |
-| `src/bridge.py` | Dieu phoi hai chieu, tao topic, recover topic, retry Telegram network errors. |
-| `src/store.py` | Luu mapping topic, message ID va quote data. |
-| `src/tg/handlers.py` | Telegram commands va message handler. |
-| `src/utils/formatting.py` | Format HTML message/activity cho Telegram. |
+| `src/main.py` | Điểm khởi chạy, load cấu hình và chạy Telegram polling. |
+| `src/config.py` | Đọc `.env`, auto-detect `fbchat-v2/src` và E2EE binary local. |
+| `src/messenger/client.py` | Đăng nhập Messenger, lắng nghe E2EE/regular, gửi text/sticker/media best-effort. |
+| `src/messenger/events.py` | Chuẩn hoá event thô của Messenger thành model tin nhắn/activity. |
+| `src/bridge.py` | Điều phối hai chiều, tạo topic, recover topic, retry lỗi mạng Telegram. |
+| `src/store.py` | Lưu mapping topic, message ID và quote data. |
+| `src/tg/handlers.py` | Lệnh Telegram và message handler. |
+| `src/utils/formatting.py` | Format HTML message/activity để gửi sang Telegram. |
 
-## Yeu cau
+## Yêu cầu
 
-- Windows, Linux hoac macOS.
-- Python 3.10 tro len. Du an da duoc chay voi Python 3.13.
-- Telegram bot token tu BotFather.
-- Telegram supergroup da bat Topics.
-- Bot Telegram phai la admin va co quyen Manage Topics.
-- Cookie Facebook cua tai khoan Messenger dung de bridge.
-- `fbchat-v2` va binary `fbchat-bridge-e2ee.exe` neu can E2EE.
-- Go 1.24 tro len neu can rebuild E2EE bridge binary.
+- Windows, Linux hoặc macOS.
+- Python 3.10 trở lên. Dự án đã được chạy với Python 3.13.
+- Telegram bot token từ BotFather.
+- Telegram supergroup đã bật Topics.
+- Bot Telegram phải là admin và có quyền Manage Topics.
+- Cookie Facebook của tài khoản Messenger dùng để bridge.
+- `fbchat-v2` và binary `fbchat-bridge-e2ee.exe` nếu cần Messenger E2EE.
+- Go 1.24 trở lên nếu cần rebuild E2EE bridge binary.
 
-## Cai dat nhanh
+## Cài đặt nhanh
 
 Trong PowerShell:
 
@@ -63,7 +64,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Sua file `.env` va dien cac gia tri bat buoc:
+Mở `.env` và điền các giá trị bắt buộc:
 
 ```env
 TG_TOKEN=1234567890:replace_me
@@ -72,54 +73,55 @@ FACEBOOK_COOKIE=c_user=...; xs=...; fr=...; datr=...;
 DATA_DIR=./data
 ```
 
-Neu dung `fbchat-v2` local nam canh thu muc project, cau hinh nay thuong duoc auto-detect. Co the khai bao thu cong khi can:
+Nếu dùng `fbchat-v2` local nằm cạnh thư mục project, chương trình thường tự detect được. Khi cần khai báo thủ công:
 
 ```env
 FBCHAT_V2_SRC_PATH=../fbchat-v2/src
 FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 ```
 
-## Cau hinh `.env`
+## Cấu hình `.env`
 
-| Bien | Bat buoc | Mo ta |
+| Biến | Bắt buộc | Mô tả |
 |---|---:|---|
-| `TG_TOKEN` | Co | Token bot Telegram tu BotFather. |
-| `TG_GROUP_ID` | Co | ID supergroup Telegram, thuong co dang `-100...`. |
-| `FACEBOOK_COOKIE` | Co* | Cookie Facebook cua tai khoan Messenger. |
-| `FACEBOOK_COOKIE_FILE` | Co* | Duong dan file chua cookie, dung thay cho `FACEBOOK_COOKIE`. |
-| `DATA_DIR` | Khong | Thu muc luu `bridge-store.json`, mac dinh `./data`. |
-| `FBCHAT_V2_SRC_PATH` | Khong | Duong dan den thu muc `fbchat-v2/src`. Project co auto-detect mot so vi tri local. |
-| `FBCHAT_E2EE_BIN` | Khong | Duong dan den binary `fbchat-bridge-e2ee.exe`. |
-| `FBCHAT_ENABLE_E2EE` | Khong | Bat/tat E2EE listener, mac dinh `1`. |
-| `FBCHAT_E2EE_MEMORY_ONLY` | Khong | Luu key E2EE trong RAM, mac dinh `1`. |
-| `FBCHAT_E2EE_DEVICE_PATH` | Khong | File persist device/key E2EE neu khong memory-only. |
-| `FBCHAT_E2EE_LOG_LEVEL` | Khong | Log level cua bridge E2EE, mac dinh `none`. |
-| `IGNORE_SELF_MESSAGES` | Khong | Bo qua tin do chinh tai khoan Facebook gui, mac dinh `1`. |
-| `MESSAGE_CACHE_LIMIT` | Khong | So mapping message giu lai de reply/activity, mac dinh `3000`. |
-| `TG_CONNECT_TIMEOUT` | Khong | Timeout ket noi Telegram Bot API, mac dinh `15`. |
-| `TG_READ_TIMEOUT` | Khong | Timeout doc response Telegram Bot API, mac dinh `45`. |
-| `TG_WRITE_TIMEOUT` | Khong | Timeout gui request Telegram Bot API, mac dinh `45`. |
-| `TG_POOL_TIMEOUT` | Khong | Timeout cho connection pool Telegram, mac dinh `30`. |
-| `FORWARD_TYPING_ACTIVITY` | Khong | Forward typing indicator sang Telegram. Mac dinh `0` de tranh spam. |
-| `FORWARD_READ_RECEIPTS` | Khong | Forward read receipt sang Telegram. Mac dinh `0` de tranh spam. |
+| `TG_TOKEN` | Có | Token bot Telegram lấy từ BotFather. |
+| `TG_GROUP_ID` | Có | ID Telegram supergroup, thường có dạng `-100...`. |
+| `FACEBOOK_COOKIE` | Có* | Cookie Facebook của tài khoản Messenger. |
+| `FACEBOOK_COOKIE_FILE` | Có* | Đường dẫn file chứa cookie, dùng thay cho `FACEBOOK_COOKIE`. |
+| `DATA_DIR` | Không | Thư mục lưu `bridge-store.json`, mặc định là `./data`. |
+| `FBCHAT_V2_SRC_PATH` | Không | Đường dẫn tới thư mục `fbchat-v2/src`. Project có auto-detect một số vị trí local. |
+| `FBCHAT_E2EE_BIN` | Không | Đường dẫn tới binary `fbchat-bridge-e2ee.exe`. |
+| `FBCHAT_ENABLE_E2EE` | Không | Bật/tắt E2EE listener, mặc định `1`. |
+| `FBCHAT_E2EE_MEMORY_ONLY` | Không | Lưu key E2EE trong RAM, mặc định `1`. |
+| `FBCHAT_E2EE_DEVICE_PATH` | Không | File persist device/key E2EE khi không dùng memory-only. |
+| `FBCHAT_E2EE_LOG_LEVEL` | Không | Log level của bridge E2EE, mặc định `none`. |
+| `FBCHAT_E2EE_SEND_TIMEOUT` | Không | Timeout cho send E2EE RPC, mặc định `180` giây. |
+| `IGNORE_SELF_MESSAGES` | Không | Bỏ qua tin do chính tài khoản Facebook gửi, mặc định `1`. |
+| `MESSAGE_CACHE_LIMIT` | Không | Số mapping message giữ lại để reply/activity, mặc định `3000`. |
+| `TG_CONNECT_TIMEOUT` | Không | Timeout kết nối Telegram Bot API, mặc định `15`. |
+| `TG_READ_TIMEOUT` | Không | Timeout đọc response Telegram Bot API, mặc định `45`. |
+| `TG_WRITE_TIMEOUT` | Không | Timeout gửi request Telegram Bot API, mặc định `45`. |
+| `TG_POOL_TIMEOUT` | Không | Timeout chờ connection pool Telegram, mặc định `30`. |
+| `FORWARD_TYPING_ACTIVITY` | Không | Forward typing indicator sang Telegram. Mặc định `0` để tránh spam. |
+| `FORWARD_READ_RECEIPTS` | Không | Forward read receipt sang Telegram. Mặc định `0` để tránh spam. |
 
-`FACEBOOK_COOKIE` va `FACEBOOK_COOKIE_FILE` la hai cach thay the nhau; chi can mot trong hai.
+`FACEBOOK_COOKIE` và `FACEBOOK_COOKIE_FILE` là hai cách thay thế nhau; chỉ cần dùng một trong hai.
 
-## Chuan bi Telegram group
+## Chuẩn bị Telegram group
 
-1. Tao bot voi BotFather va copy token vao `TG_TOKEN`.
-2. Tao Telegram group, convert thanh supergroup neu can.
-3. Bat Topics trong group settings.
-4. Them bot vao group.
-5. Promote bot thanh admin.
-6. Bat quyen Manage Topics va quyen gui tin nhan.
-7. Lay group ID dang `-100...` va dien vao `TG_GROUP_ID`.
+1. Tạo bot bằng BotFather và copy token vào `TG_TOKEN`.
+2. Tạo Telegram group, convert thành supergroup nếu cần.
+3. Bật Topics trong group settings.
+4. Thêm bot vào group.
+5. Promote bot thành admin.
+6. Bật quyền Manage Topics và quyền gửi tin nhắn.
+7. Lấy group ID dạng `-100...` và điền vào `TG_GROUP_ID`.
 
-Sau khi chay bot, dung lenh `/checktopics` trong group de kiem tra quyen.
+Sau khi chạy bot, dùng lệnh `/checktopics` trong group để kiểm tra quyền tạo topic.
 
 ## Build E2EE binary
 
-Neu da co `fbchat-v2/build/fbchat-bridge-e2ee.exe`, co the bo qua buoc nay. Neu chua co hoac vua sua RPC media/sticker, rebuild binary:
+Nếu đã có `fbchat-v2/build/fbchat-bridge-e2ee.exe`, có thể bỏ qua bước này. Nếu chưa có hoặc vừa sửa RPC media/sticker, rebuild binary:
 
 ```powershell
 cd "c:\Users\minhh\Downloads\mhwidev - project\fbchat-v2\bridge-e2ee"
@@ -127,13 +129,13 @@ go mod tidy
 go build -ldflags="-s -w" -o ..\build\fbchat-bridge-e2ee.exe .
 ```
 
-Sau do dam bao `.env` tro dung binary:
+Sau đó đảm bảo `.env` trỏ đúng binary:
 
 ```env
 FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 ```
 
-## Chay bridge
+## Chạy bridge
 
 ```powershell
 cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
@@ -141,123 +143,132 @@ cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
 python .\src\main.py
 ```
 
-Khi bridge khoi dong thanh cong, bot se gui thong bao vao Telegram group. Khi co hoi thoai Messenger moi, bridge se tao topic moi va bat dau forward tin nhan/activity vao topic do.
+Khi bridge khởi động thành công, bot sẽ gửi thông báo vào Telegram group. Khi có hội thoại Messenger mới, bridge sẽ tạo topic mới và bắt đầu forward tin nhắn/activity vào topic đó.
 
-## Lenh Telegram
+## Lệnh Telegram
 
-| Lenh | Mo ta |
+| Lệnh | Mô tả |
 |---|---|
-| `/help` | Hien thong tin su dung co ban. |
-| `/status` | Xem trang thai listener, Facebook ID va so topic da map. |
-| `/checktopics` | Kiem tra supergroup, Topics va quyen Manage Topics cua bot. |
-| `/topic list` | Liet ke cac topic da map voi Messenger. |
-| `/topic info` | Xem mapping cua topic hien tai. |
-| `/topic delete` | Xoa mapping cua topic hien tai. |
+| `/help` | Hiển thị hướng dẫn sử dụng cơ bản. |
+| `/status` | Xem trạng thái listener, Facebook ID và số topic đã map. |
+| `/checktopics` | Kiểm tra supergroup, Topics và quyền Manage Topics của bot. |
+| `/topic list` | Liệt kê các topic đã map với Messenger. |
+| `/topic info` | Xem mapping của topic hiện tại. |
+| `/topic delete` | Xoá mapping của topic hiện tại. |
 
-Tin nhan va sticker Telegram chi duoc forward ve Messenger khi duoc gui trong topic da co mapping.
+Tin nhắn và sticker Telegram chỉ được forward về Messenger khi được gửi trong topic đã có mapping.
 
-## Cach hoat dong
+## Cách hoạt động
 
-### Messenger -> Telegram
+### Messenger sang Telegram
 
-1. Listener nhan event tu `fbchat-v2`.
-2. Event duoc parse thanh `IncomingMessengerMessage` hoac `IncomingMessengerActivity`.
-3. Bridge tim topic da map theo `transport + messenger_id`.
-4. Neu chua co topic, bot tao forum topic moi.
-5. Tin nhan/activity duoc gui vao topic, co reply vao message Telegram goc neu co mapping.
+1. Listener nhận event từ `fbchat-v2`.
+2. Event được parse thành `IncomingMessengerMessage` hoặc `IncomingMessengerActivity`.
+3. Bridge tìm topic đã map theo `transport + messenger_id`.
+4. Nếu chưa có topic, bot tạo forum topic mới.
+5. Tin nhắn/activity được gửi vào topic, có reply vào message Telegram gốc nếu có mapping.
 
-### Telegram -> Messenger
+### Telegram sang Messenger
 
-1. Nguoi dung gui tin trong topic Telegram da map.
-2. Bridge lay mapping topic de biet thread/chat JID Messenger dich.
-3. Neu message la text/caption, bridge gui text sang Messenger.
-4. Neu message la sticker, bridge tai file sticker tu Telegram va gui sang Messenger best-effort.
-5. Message ID Messenger tra ve se duoc luu de reply va reaction/activity sau nay bam dung tin.
+1. Người dùng gửi tin trong topic Telegram đã map.
+2. Bridge lấy mapping topic để biết thread/chat JID Messenger đích.
+3. Nếu message là text/caption, bridge gửi text sang Messenger.
+4. Nếu message là sticker, bridge tải file sticker từ Telegram và gửi sang Messenger best-effort.
+5. Message ID Messenger trả về sẽ được lưu lại để các reply, reaction và activity sau này có thể bám đúng tin.
 
-## Ho tro hien tai
+## Trạng thái hỗ trợ
 
-| Chuc nang | Trang thai |
+| Chức năng | Trạng thái |
 |---|---|
-| Messenger text -> Telegram | Ho tro |
-| Telegram text -> Messenger | Ho tro |
-| Messenger reply -> Telegram reply | Ho tro neu co message ID mapping |
-| Telegram reply -> Messenger reply | Ho tro neu co message ID mapping |
-| Messenger reaction/activity -> Telegram | Ho tro |
-| Telegram sticker -> Messenger | Ho tro best-effort |
-| Messenger attachment -> Telegram | Hien link/mo ta neu event co URL |
-| Telegram photo/video/file -> Messenger | Chua phai luong chinh, hien marker text neu khong phai sticker |
-| E2EE text | Ho tro |
-| E2EE sticker/media send | Ho tro qua binary da expose RPC media |
+| Messenger text sang Telegram | Hỗ trợ |
+| Telegram text sang Messenger | Hỗ trợ |
+| Messenger reply sang Telegram reply | Hỗ trợ nếu có message ID mapping |
+| Telegram reply sang Messenger reply | Hỗ trợ nếu có message ID mapping |
+| Messenger reaction/edit/unsend sang Telegram | Hỗ trợ |
+| Messenger typing/read receipt sang Telegram | Có thể bật, mặc định tắt để tránh spam |
+| Telegram sticker sang Messenger | Hỗ trợ best-effort |
+| Messenger attachment sang Telegram | Hiển thị link/mô tả nếu event có URL |
+| Telegram photo/video/file sang Messenger | Chưa phải luồng chính; hiện ưu tiên text/sticker |
+| E2EE text | Hỗ trợ |
+| Gửi E2EE sticker/media | Hỗ trợ qua binary đã expose RPC media |
 
-## Du lieu luu tru
+## Dữ liệu lưu trữ
 
-Mac dinh du lieu runtime nam trong:
+Dữ liệu runtime mặc định nằm trong:
 
 ```text
 data/bridge-store.json
 ```
 
-File nay chua:
+File này chứa:
 
-- Mapping Telegram topic -> Messenger conversation.
-- Mapping Messenger message ID -> Telegram message ID.
-- Quote data de gui reply va route reaction/edit/unsend.
+- Mapping Telegram topic sang Messenger conversation.
+- Mapping Messenger message ID sang Telegram message ID.
+- Quote data để gửi reply và route reaction/edit/unsend.
 
-Khong nen xoa file nay khi bridge dang chay. Neu xoa, bot van chay nhung se mat mapping cu va co the tao topic moi cho cac hoi thoai da tung map.
+Không nên xoá file này khi bridge đang chạy. Nếu xoá, bot vẫn chạy nhưng sẽ mất mapping cũ và có thể tạo topic mới cho các hội thoại đã từng map.
 
-## Van hanh va bao mat
+## Vận hành và bảo mật
 
-- Khong commit `.env`, cookie Facebook, `data/` hoac E2EE device/key file.
-- Nen dung tai khoan phu de bridge vi Facebook/Messenger co the checkpoint session khi dung API khong chinh thuc.
-- Cookie Facebook het han hoac bi checkpoint se lam listener/send that bai; khi do dang nhap lai Facebook va cap nhat cookie.
-- Telegram topic ID co the stale neu topic bi xoa/dong; bridge co co che tao topic moi va retry.
-- Telegram network co the timeout tam thoi; bridge da retry `TimedOut`, `NetworkError` va `RetryAfter`.
-- Typing/read receipt co tan suat rat cao, nen mac dinh khong forward sang Telegram. Reaction, edit va unsend van duoc forward.
-- E2EE phu thuoc binary Go cua `fbchat-v2`; neu binary cu, cac RPC sticker/media co the bao `unknown method`.
+- Không commit `.env`, cookie Facebook, thư mục `data/` hoặc file E2EE device/key.
+- Nên dùng tài khoản phụ để bridge vì Facebook/Messenger có thể checkpoint session khi dùng API không chính thức.
+- Cookie Facebook hết hạn hoặc bị checkpoint sẽ làm listener/send thất bại; khi đó cần đăng nhập lại Facebook và cập nhật cookie.
+- Telegram topic ID có thể stale nếu topic bị xoá/đóng; bridge có cơ chế tạo topic mới và retry.
+- Telegram network có thể timeout tạm thời; bridge đã retry `TimedOut`, `NetworkError` và `RetryAfter`.
+- Typing/read receipt có tần suất rất cao, nên mặc định không forward sang Telegram. Reaction, edit và unsend vẫn được forward.
+- E2EE phụ thuộc binary Go của `fbchat-v2`; nếu binary cũ, các RPC sticker/media có thể báo `unknown method`.
 
 ## Troubleshooting
 
 ### `Missing required environment variable: TG_TOKEN`
 
-Kiem tra `.env` da ton tai trong thu muc `Messenger-Bridge-Telegram` va da dien `TG_TOKEN`.
+Kiểm tra `.env` đã tồn tại trong thư mục `Messenger-Bridge-Telegram` và đã điền `TG_TOKEN`.
 
-### `TG_GROUP_ID` sai hoac bot khong phan hoi
+### `TG_GROUP_ID` sai hoặc bot không phản hồi
 
-Dam bao group ID co dang `-100...`, bot da duoc them vao dung group, va bot co quyen gui tin nhan.
+Đảm bảo group ID có dạng `-100...`, bot đã được thêm vào đúng group và bot có quyền gửi tin nhắn.
 
-### Bot khong tao topic moi
+### Bot không tạo topic mới
 
-Chay `/checktopics`. Group phai la supergroup, da bat Topics, bot phai la admin va co quyen Manage Topics.
+Chạy `/checktopics`. Group phải là supergroup, đã bật Topics, bot phải là admin và có quyền Manage Topics.
 
 ### `Could not import fbchat-v2 internal modules`
 
-Set `FBCHAT_V2_SRC_PATH` ve dung thu muc chua `_core` va `_messaging`, vi du:
+Set `FBCHAT_V2_SRC_PATH` về đúng thư mục chứa `_core` và `_messaging`, ví dụ:
 
 ```env
 FBCHAT_V2_SRC_PATH=../fbchat-v2/src
 ```
 
-### Khong tim thay `fbchat-bridge-e2ee.exe`
+### Không tìm thấy `fbchat-bridge-e2ee.exe`
 
-Build binary theo muc Build E2EE binary, sau do set:
+Build binary theo mục Build E2EE binary, sau đó set:
 
 ```env
 FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 ```
 
-### Topic hien ID thay vi ten nguoi dung
+### Topic hiện ID thay vì tên người dùng
 
-Messenger E2EE khong phai luc nao cung tra ten nguoi gui ngay trong event. Bridge se co gang resolve ten tu snapshot/profile va rename topic khi co du lieu.
+Messenger E2EE không phải lúc nào cũng trả tên người gửi ngay trong event. Bridge sẽ cố gắng resolve tên từ snapshot/profile và rename topic khi có dữ liệu.
 
-### Reaction/edit/unsend khong reply vao message goc
+### Reaction/edit/unsend không reply vào message gốc
 
-Activity chi reply duoc vao message goc neu message do da tung di qua bridge va con nam trong cache mapping. Tang `MESSAGE_CACHE_LIMIT` neu can giu mapping lau hon.
+Activity chỉ reply được vào message gốc nếu message đó đã từng đi qua bridge và còn nằm trong cache mapping. Tăng `MESSAGE_CACHE_LIMIT` nếu cần giữ mapping lâu hơn.
 
-### Telegram sticker gui sang Messenger bi loi `unknown method`
+### E2EE reply báo `sendE2EEMessage timed out after 60.0s`
 
-Binary E2EE bridge dang cu. Rebuild `fbchat-v2/bridge-e2ee` va dam bao `FBCHAT_E2EE_BIN` tro den binary moi.
+Cập nhật source mới và restart bot. Bridge hiện dùng `FBCHAT_E2EE_SEND_TIMEOUT`, mặc định `180` giây, đồng thời bỏ metadata reply E2EE nếu thiếu `senderJid` để tránh treo quoted message. Nếu vẫn timeout, Messenger E2EE session có thể đang bị nghẽn; restart bot để tạo lại bridge process.
 
-## Kiem tra nhanh
+### Telegram báo timeout liên tục khi `send_message`
+
+Giữ `FORWARD_TYPING_ACTIVITY=0` và `FORWARD_READ_RECEIPTS=0` để tránh spam activity. Nếu mạng Telegram chậm, tăng `TG_READ_TIMEOUT`, `TG_WRITE_TIMEOUT` và `TG_POOL_TIMEOUT` trong `.env`.
+
+### Telegram sticker gửi sang Messenger báo `unknown method`
+
+Binary E2EE bridge đang cũ. Rebuild `fbchat-v2/bridge-e2ee` và đảm bảo `FBCHAT_E2EE_BIN` trỏ đến binary mới.
+
+## Kiểm tra nhanh
 
 Compile Python:
 
@@ -266,24 +277,24 @@ cd "c:\Users\minhh\Downloads\mhwidev - project\Messenger-Bridge-Telegram"
 python -m compileall src
 ```
 
-Smoke test RPC sticker cua binary moi:
+Smoke test RPC sticker của binary mới:
 
 ```powershell
 cd "c:\Users\minhh\Downloads\mhwidev - project\fbchat-v2\bridge-e2ee"
 '{"id":1,"method":"sendE2EESticker","params":{}}' | & "..\build\fbchat-bridge-e2ee.exe"
 ```
 
-Ket qua mong doi khi chua login la:
+Kết quả mong đợi khi chưa login là:
 
 ```json
 {"id":1,"ok":false,"error":"client not initialised"}
 ```
 
-Neu ket qua la `unknown method`, binary chua duoc rebuild.
+Nếu kết quả là `unknown method`, binary chưa được rebuild.
 
-## Gioi han
+## Giới hạn hiện tại
 
-- Day la bridge dua tren API/behavior khong chinh thuc cua Facebook Messenger, nen co the thay doi theo thoi gian.
-- Media Messenger -> Telegram hien uu tien link/mo ta tu event, chua download/reupload day du moi loai attachment.
-- Animated Telegram sticker `.tgs` khong phai dinh dang sticker native cua Messenger, nen duoc gui best-effort nhu file.
-- E2EE can bridge Go va session/key hop le; lan dau ket noi co the can thoi gian khoi tao.
+- Bridge dựa trên API/behavior không chính thức của Facebook Messenger, nên có thể thay đổi theo thời gian.
+- Media Messenger sang Telegram hiện ưu tiên link/mô tả từ event, chưa download/reupload đầy đủ mọi loại attachment.
+- Animated Telegram sticker `.tgs` không phải định dạng sticker native của Messenger, nên được gửi best-effort như file.
+- E2EE cần bridge Go và session/key hợp lệ; lần đầu kết nối có thể cần thời gian khởi tạo.

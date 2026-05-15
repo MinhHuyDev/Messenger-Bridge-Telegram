@@ -105,6 +105,7 @@ class AppConfig:
     fbchat_e2ee_log_level: str
     fbchat_e2ee_memory_only: bool
     fbchat_enable_e2ee: bool
+    fbchat_e2ee_send_timeout: float
     ignore_self_messages: bool
     message_cache_limit: int
     telegram_connect_timeout: float
@@ -135,6 +136,7 @@ def load_config() -> AppConfig:
         fbchat_e2ee_log_level=os.environ.get("FBCHAT_E2EE_LOG_LEVEL", "none"),
         fbchat_e2ee_memory_only=_env_bool("FBCHAT_E2EE_MEMORY_ONLY", True),
         fbchat_enable_e2ee=_env_bool("FBCHAT_ENABLE_E2EE", True),
+        fbchat_e2ee_send_timeout=float(os.environ.get("FBCHAT_E2EE_SEND_TIMEOUT", "180")),
         ignore_self_messages=_env_bool("IGNORE_SELF_MESSAGES", True),
         message_cache_limit=_env_int("MESSAGE_CACHE_LIMIT", 3000),
         telegram_connect_timeout=float(os.environ.get("TG_CONNECT_TIMEOUT", "15")),
