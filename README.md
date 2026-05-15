@@ -96,6 +96,12 @@ FBCHAT_E2EE_BIN=../fbchat-v2/build/fbchat-bridge-e2ee.exe
 | `FBCHAT_E2EE_LOG_LEVEL` | Khong | Log level cua bridge E2EE, mac dinh `none`. |
 | `IGNORE_SELF_MESSAGES` | Khong | Bo qua tin do chinh tai khoan Facebook gui, mac dinh `1`. |
 | `MESSAGE_CACHE_LIMIT` | Khong | So mapping message giu lai de reply/activity, mac dinh `3000`. |
+| `TG_CONNECT_TIMEOUT` | Khong | Timeout ket noi Telegram Bot API, mac dinh `15`. |
+| `TG_READ_TIMEOUT` | Khong | Timeout doc response Telegram Bot API, mac dinh `45`. |
+| `TG_WRITE_TIMEOUT` | Khong | Timeout gui request Telegram Bot API, mac dinh `45`. |
+| `TG_POOL_TIMEOUT` | Khong | Timeout cho connection pool Telegram, mac dinh `30`. |
+| `FORWARD_TYPING_ACTIVITY` | Khong | Forward typing indicator sang Telegram. Mac dinh `0` de tranh spam. |
+| `FORWARD_READ_RECEIPTS` | Khong | Forward read receipt sang Telegram. Mac dinh `0` de tranh spam. |
 
 `FACEBOOK_COOKIE` va `FACEBOOK_COOKIE_FILE` la hai cach thay the nhau; chi can mot trong hai.
 
@@ -206,6 +212,7 @@ Khong nen xoa file nay khi bridge dang chay. Neu xoa, bot van chay nhung se mat 
 - Cookie Facebook het han hoac bi checkpoint se lam listener/send that bai; khi do dang nhap lai Facebook va cap nhat cookie.
 - Telegram topic ID co the stale neu topic bi xoa/dong; bridge co co che tao topic moi va retry.
 - Telegram network co the timeout tam thoi; bridge da retry `TimedOut`, `NetworkError` va `RetryAfter`.
+- Typing/read receipt co tan suat rat cao, nen mac dinh khong forward sang Telegram. Reaction, edit va unsend van duoc forward.
 - E2EE phu thuoc binary Go cua `fbchat-v2`; neu binary cu, cac RPC sticker/media co the bao `unknown method`.
 
 ## Troubleshooting

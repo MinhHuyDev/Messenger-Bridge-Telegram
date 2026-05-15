@@ -223,15 +223,19 @@ class MessengerTelegramBridge:
 
     def _should_forward_activity(self, activity: IncomingMessengerActivity) -> bool:
         if activity.kind == "typing":
+            if not self.config.forward_typing_activity:
+                return False
             return self._dedupe_activity(
                 f"typing:{activity.messenger_id}:{activity.actor_id}:{activity.is_typing}",
-                5000,
+                30000,
             )
         if activity.kind in {"read_receipt", "e2ee_receipt"}:
+            if not self.config.forward_read_receipts:
+                return False
             target = activity.target_message_id or activity.text or activity.receipt_type
             return self._dedupe_activity(
                 f"receipt:{activity.kind}:{activity.messenger_id}:{activity.actor_id}:{target}",
-                15000,
+                60000,
             )
         return True
 
@@ -672,21 +676,22 @@ class MessengerTelegramBridge:
 
     @staticmethod
     async def _telegram_call(fn, *args, **kwargs):
-        for attempt in range(5):
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
                 return await fn(*args, **kwargs)
             except RetryAfter as exc:
-                if attempt == 4:
+                if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(float(exc.retry_after) + 1.0)
             except TimedOut as exc:
-                if attempt == 4:
+                if attempt == max_attempts - 1:
                     raise
-                delay = 1.0 + attempt
+                delay = 2.0 + attempt
                 print(f"[Telegram] Timed out calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
             except NetworkError as exc:
-                if attempt == 4:
+                if attempt == max_attempts - 1:
                     raise
                 delay = min(10.0, 2.0 + (attempt * 2.0))
                 print(f"[Telegram] Network error calling {getattr(fn, '__name__', fn)}: {exc}. Retrying in {delay:.1f}s")

@@ -107,6 +107,12 @@ class AppConfig:
     fbchat_enable_e2ee: bool
     ignore_self_messages: bool
     message_cache_limit: int
+    telegram_connect_timeout: float
+    telegram_read_timeout: float
+    telegram_write_timeout: float
+    telegram_pool_timeout: float
+    forward_typing_activity: bool
+    forward_read_receipts: bool
 
 
 def load_config() -> AppConfig:
@@ -131,4 +137,10 @@ def load_config() -> AppConfig:
         fbchat_enable_e2ee=_env_bool("FBCHAT_ENABLE_E2EE", True),
         ignore_self_messages=_env_bool("IGNORE_SELF_MESSAGES", True),
         message_cache_limit=_env_int("MESSAGE_CACHE_LIMIT", 3000),
+        telegram_connect_timeout=float(os.environ.get("TG_CONNECT_TIMEOUT", "15")),
+        telegram_read_timeout=float(os.environ.get("TG_READ_TIMEOUT", "45")),
+        telegram_write_timeout=float(os.environ.get("TG_WRITE_TIMEOUT", "45")),
+        telegram_pool_timeout=float(os.environ.get("TG_POOL_TIMEOUT", "30")),
+        forward_typing_activity=_env_bool("FORWARD_TYPING_ACTIVITY", False),
+        forward_read_receipts=_env_bool("FORWARD_READ_RECEIPTS", False),
     )
